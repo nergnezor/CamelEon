@@ -13,12 +13,20 @@ use crate::canvas3d::{darken, lighten, mix, Camera, Canvas3d, OUTLINE};
 use crate::paint::{self, wash};
 use crate::level::{Block, BlockKind, ClimbKind, Level};
 
-const SKY_TOP: Color = Color::from_rgb8(0x6f, 0xa8, 0xb4);
-const SKY_HORIZON: Color = Color::from_rgb8(0xf4, 0xe6, 0xbe);
-const FOG: Color = Color::from_rgb8(0xcf, 0xdf, 0xc0);
-const LEAF: Color = Color::from_rgb8(0x5a, 0x9a, 0x4a);
-const LEAF_DARK: Color = Color::from_rgb8(0x2c, 0x55, 0x33);
-const BARK: Color = Color::from_rgb8(0x8e, 0x62, 0x3c);
+const SKY_TOP: Color = Color::from_rgb8(0x6f, 0x7f, 0xb8);
+const SKY_HORIZON: Color = Color::from_rgb8(0xee, 0xb4, 0x96);
+/// Distance haze: a dusty peach-lilac, so far things take on the sky's colour.
+const FOG: Color = Color::from_rgb8(0xc8, 0xa8, 0xb8);
+const LEAF: Color = Color::from_rgb8(0x6a, 0xa8, 0x7c);
+const LEAF_DARK: Color = Color::from_rgb8(0x2e, 0x4a, 0x5a);
+const BARK: Color = Color::from_rgb8(0x9a, 0x6a, 0x5a);
+/// Blossom and foliage accents mixed into some trees.
+const ACCENTS: [Color; 4] = [
+    Color::from_rgb8(0xd9, 0x8c, 0xa8),
+    Color::from_rgb8(0xa6, 0x8c, 0xc8),
+    Color::from_rgb8(0x5f, 0xa8, 0xa0),
+    Color::from_rgb8(0xe8, 0xa8, 0x78),
+];
 
 /// Deterministic pseudo-random number in [0, 1) for an integer cell.
 fn hash(i: i64, seed: u64) -> f64 {
@@ -46,17 +54,17 @@ struct Layer {
 }
 
 const LAYERS: [Layer; 4] = [
-    Layer { z: 90.0, base: -6.0, amp: 22.0, color: Color::from_rgb8(0x5d, 0x8c, 0x7a), fog: 0.55, tree_spacing: 0.0, tree_size: 0.0, seed: 1 },
-    Layer { z: 40.0, base: -3.0, amp: 4.0, color: Color::from_rgb8(0x3f, 0x77, 0x52), fog: 0.45, tree_spacing: 6.0, tree_size: 3.2, seed: 2 },
-    Layer { z: 18.0, base: -2.5, amp: 2.5, color: Color::from_rgb8(0x2f, 0x62, 0x3e), fog: 0.28, tree_spacing: 4.5, tree_size: 2.4, seed: 3 },
-    Layer { z: 7.0, base: -3.0, amp: 1.5, color: Color::from_rgb8(0x24, 0x4c, 0x30), fog: 0.12, tree_spacing: 3.8, tree_size: 2.0, seed: 4 },
+    Layer { z: 90.0, base: -6.0, amp: 22.0, color: Color::from_rgb8(0x7a, 0x6e, 0xa8), fog: 0.4, tree_spacing: 0.0, tree_size: 0.0, seed: 1 },
+    Layer { z: 40.0, base: -3.0, amp: 4.0, color: Color::from_rgb8(0x4f, 0x86, 0x8a), fog: 0.35, tree_spacing: 6.0, tree_size: 3.2, seed: 2 },
+    Layer { z: 18.0, base: -2.5, amp: 2.5, color: Color::from_rgb8(0x45, 0x78, 0x66), fog: 0.2, tree_spacing: 4.5, tree_size: 2.4, seed: 3 },
+    Layer { z: 7.0, base: -3.0, amp: 1.5, color: Color::from_rgb8(0x35, 0x5c, 0x55), fog: 0.08, tree_spacing: 3.8, tree_size: 2.0, seed: 4 },
 ];
 
 /// Sky and background layers, drawn straight into the scene (always behind).
 pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f64) {
     let sky = Gradient::new_linear((0.0, 0.0), (0.0, h)).with_stops([SKY_TOP, SKY_HORIZON, SKY_HORIZON]);
     scene.fill(Fill::NonZero, Affine::IDENTITY, &sky, None, &Rect::new(0.0, 0.0, w, h));
-    let sun = Point::new(w * 0.72, h * 0.18);
+    let sun = Point::new(w * paint::SUN.0, h * paint::SUN.1);
     let glow = Gradient::new_radial(sun, (h * 0.5) as f32).with_stops([
         Color::from_rgb8(0xff, 0xf6, 0xd0).with_alpha(0.9),
         Color::from_rgb8(0xff, 0xf6, 0xd0).with_alpha(0.0),
@@ -85,16 +93,21 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
         let height = |x: f64| {
             let n = wave(x, layer.seed as f64 * 1.7);
             if li == 0 {
-                // Jagged mountains.
-                layer.base + layer.amp * (n * n + 0.25 * (x * 0.9).sin().abs())
+                // Mountains: broad peaks with gentle ridges (no fine detail,
+                // which would flicker as the camera moves).
+                layer.base + layer.amp * (n * n + 0.12 * (x * 0.3).sin().abs())
             } else {
                 layer.base + layer.amp * n
             }
         };
-        let steps = 90;
+        // Sample at fixed points in the world, so the outline stays put as the
+        // camera pans and zooms instead of being resampled every frame.
+        let step = if li == 0 { 1.5 } else { 0.75 };
+        let first = (x0 / step).floor() as i64;
+        let steps = ((x1 - x0) / step).ceil() as i64 + 1;
         let mut hills = BezPath::new();
         for i in 0..=steps {
-            let x = x0 + (x1 - x0) * i as f64 / steps as f64;
+            let x = (first + i) as f64 * step;
             let p = cam.point(DVec3::new(x, height(x), layer.z));
             if i == 0 {
                 hills.move_to(p);
@@ -118,6 +131,13 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
                 let tf = Affine::translate(p.pos.to_vec2()) * Affine::scale_non_uniform(p.scale * size, -p.scale * size);
                 let sway = (time * 0.8 + i as f64).sin() * 0.04;
                 let seed = (i as u64).wrapping_mul(31) ^ layer.seed;
+                // Some trees blossom or turn: pastel accents, hazed with distance.
+                let color = if hash(i, layer.seed + 40) < 0.45 {
+                    let accent = ACCENTS[(hash(i, layer.seed + 41) * 4.0) as usize % 4];
+                    mix(mix(layer.color, accent, 0.55), FOG, layer.fog)
+                } else {
+                    color
+                };
                 let size_px = p.scale * size;
                 if hash(i, layer.seed + 20) < 0.4 {
                     draw_palm(scene, tf, color, sway, size_px, seed);
@@ -228,9 +248,9 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
 fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     let cam = canvas.camera;
     let (top, front, side) = match b.kind {
-        BlockKind::Ground => (Color::from_rgb8(0x8c, 0xc0, 0x63), Color::from_rgb8(0xa9, 0x78, 0x4a), Color::from_rgb8(0x86, 0x5c, 0x38)),
-        BlockKind::Stone => (Color::from_rgb8(0xa4, 0xb8, 0x86), Color::from_rgb8(0x9a, 0xa3, 0xab), Color::from_rgb8(0x7a, 0x82, 0x8c)),
-        BlockKind::Log => (Color::from_rgb8(0xb5, 0x82, 0x4e), Color::from_rgb8(0x9c, 0x6a, 0x3a), Color::from_rgb8(0xe0, 0xbc, 0x8a)),
+        BlockKind::Ground => (Color::from_rgb8(0x8e, 0xc4, 0x8a), Color::from_rgb8(0xb0, 0x76, 0x62), Color::from_rgb8(0x7e, 0x56, 0x5e)),
+        BlockKind::Stone => (Color::from_rgb8(0xa8, 0xc0, 0x9a), Color::from_rgb8(0x9a, 0x94, 0xb4), Color::from_rgb8(0x6e, 0x68, 0x8e)),
+        BlockKind::Log => (Color::from_rgb8(0xc0, 0x86, 0x74), Color::from_rgb8(0xa4, 0x6c, 0x62), Color::from_rgb8(0xe6, 0xc0, 0x9c)),
     };
     // Don't bother drawing far below the screen.
     let y0 = b.y0.max(cam.eye.y - 25.0);
@@ -348,10 +368,14 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     let depth = canvas.depth_of(center) + (dx + dy) * 0.001;
     let seed = paint::seed(&[b.x0, b.y1]);
     canvas.push(depth, move |scene| {
+        // Platforms are solid: an opaque base under the translucent washes,
+        // so nothing behind shows through.
         for (i, (face, color)) in faces.iter().enumerate() {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, *color, None, face);
             wash(scene, face, *color, None, scale * 2.0, seed ^ i as u64, anchor);
             paint::ink(scene, face, scale * 2.0, seed ^ i as u64, anchor);
         }
+        scene.fill(Fill::NonZero, Affine::IDENTITY, front, None, &front_face);
         wash(scene, &front_face, front, None, scale * 2.0, seed ^ 0xf, anchor);
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &front_face);
         for (i, (path, color, stroke)) in details.iter().enumerate() {
@@ -587,7 +611,7 @@ fn draw_foreground(canvas: &mut Canvas3d, w: f64, time: f64) {
         let pr = cam.project(base);
         let s = pr.scale * (1.1 + hash(i, 53) * 0.8);
         let sway = (time * 1.1 + i as f64).sin() * 0.05;
-        let color = if hash(i, 54) < 0.5 { LEAF_DARK } else { darken(LEAF, 0.4) };
+        let color = if hash(i, 54) < 0.5 { LEAF_DARK } else { mix(darken(LEAF, 0.35), ACCENTS[1], 0.3) };
         canvas.push(pr.depth, move |scene| {
             for k in 0..7 {
                 let a = -PI / 2.0 + (k as f64 - 3.0) * 0.32 + sway;

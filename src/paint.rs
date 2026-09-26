@@ -12,7 +12,22 @@ use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Blob, BlendMode, Brush, Color, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
 use vello::Scene;
 
-pub const INK: Color = Color::from_rgb8(0x3b, 0x2a, 0x1e);
+pub const INK: Color = Color::from_rgb8(0x1f, 0x16, 0x1e);
+/// Shadows lean towards a cool violet, lit sides towards warm peach.
+const SHADOW_TINT: Color = Color::from_rgb8(0x4a, 0x3c, 0x7a);
+const LIGHT_TINT: Color = Color::from_rgb8(0xff, 0xe6, 0xc8);
+/// Where the sun sits on screen (fraction of width and height).
+pub const SUN: (f64, f64) = (0.72, 0.18);
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let [ar, ag, ab, aa] = a.components;
+    let [br, bg, bb, ba] = b.components;
+    Color::new([ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t, aa + (ba - aa) * t])
+}
+
+fn cool_shadow(color: Color) -> Color {
+    mix(darken(color, 0.25), SHADOW_TINT, 0.4)
+}
 
 pub fn darken(c: Color, amount: f32) -> Color {
     let [r, g, b, a] = c.components;
@@ -179,7 +194,7 @@ pub fn wash_with_edge(
 /// shadow side.
 pub fn ball_glaze(center: Point, radius: f64, color: Color) -> Gradient {
     let hot = center + Vec2::new(-0.45, -0.55) * radius * 0.6;
-    let shadow = darken(color, 0.35);
+    let shadow = cool_shadow(color);
     Gradient::new_two_point_radial(hot, 0.0_f32, center, (radius * 1.05) as f32).with_stops([
         (0.0, Color::WHITE.with_alpha(0.35)),
         (0.3, shadow.with_alpha(0.0)),
@@ -195,7 +210,7 @@ pub fn tube_glaze(mid: Point, axis: Vec2, width: f64, color: Color) -> Gradient 
     if n.dot(Vec2::new(-0.45, -0.55)) < 0.0 {
         n = -n;
     }
-    let shadow = darken(color, 0.35);
+    let shadow = cool_shadow(color);
     Gradient::new_linear(mid + n * width, mid - n * width).with_stops([
         (0.0, Color::WHITE.with_alpha(0.3)),
         (0.35, shadow.with_alpha(0.0)),
@@ -204,13 +219,11 @@ pub fn tube_glaze(mid: Point, axis: Vec2, width: f64, color: Color) -> Gradient 
     ])
 }
 
-/// A loose sepia ink line with gaps, like a quick pen sketch over the paint.
+/// A bold, confident ink outline, slightly uneven like a hand-inked cel.
 pub fn ink(scene: &mut Scene, path: &BezPath, size: f64, seed: u64, anchor: Point) {
-    let width = (size * 0.05).clamp(0.8, 2.2);
-    let dash = (size * 0.6).clamp(12.0, 80.0);
-    let offset = rand01(seed, 1) * dash * 3.0;
-    let stroke = Stroke::new(width).with_dashes(offset, [dash, dash * 0.12, dash * 0.7, dash * 0.2]);
-    scene.stroke(&stroke, Affine::IDENTITY, INK.with_alpha(0.75), None, &wobble(path, width * 0.6, seed ^ 0x99, anchor));
+    let width = (size * 0.055).clamp(1.2, 4.0);
+    let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
+    scene.stroke(&stroke, Affine::IDENTITY, INK, None, &wobble(path, width * 0.25, seed ^ 0x99, anchor));
 }
 
 /// Cold-pressed watercolour paper: a tileable grain texture.
@@ -261,17 +274,81 @@ fn paper_texture() -> &'static ImageData {
     })
 }
 
-/// Multiplies paper grain and a soft vignette over everything drawn so far.
-pub fn paper(scene: &mut Scene, w: f64, h: f64) {
+/// Final grade over everything drawn so far: watercolour paper, sunlight
+/// falling off into cool violet dusk away from the sun, a soft vignette and a
+/// warm bloom around the sun.
+pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     let rect = Rect::new(0.0, 0.0, w, h);
-    scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, Affine::IDENTITY, &rect);
-    let brush: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rect);
+    let id = Affine::IDENTITY;
+    let sun = Point::new(w * SUN.0, h * SUN.1);
+
+    scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, id, &rect);
+    let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
+    scene.fill(Fill::NonZero, id, &paper, None, &rect);
+    scene.fill(Fill::NonZero, id, Color::from_rgb8(0xe6, 0xe0, 0xde), None, &rect);
+    let away = Point::new(w * (1.0 - SUN.0) - w * 0.3, h * 1.1);
+    let dusk = Gradient::new_linear(sun, away).with_stops([
+        (0.0, Color::WHITE),
+        (0.4, Color::from_rgb8(0xe2, 0xd6, 0xe4)),
+        (1.0, Color::from_rgb8(0x72, 0x62, 0x98)),
+    ]);
+    scene.fill(Fill::NonZero, id, &dusk, None, &rect);
     let vignette = Gradient::new_radial(Point::new(w / 2.0, h / 2.0), (w.max(h) * 0.75) as f32).with_stops([
         (0.0, Color::WHITE),
-        (0.7, Color::WHITE),
-        (1.0, Color::from_rgb8(0xd8, 0xcc, 0xb4)),
+        (0.65, Color::WHITE),
+        (1.0, Color::from_rgb8(0xb8, 0xa4, 0xa8)),
     ]);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, &vignette, None, &rect);
+    scene.fill(Fill::NonZero, id, &vignette, None, &rect);
     scene.pop_layer();
+
+    scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Screen), 1.0, id, &rect);
+    let bloom = Gradient::new_radial(sun, (h * 0.75) as f32).with_stops([
+        (0.0, Color::from_rgb8(0xff, 0xc8, 0x90).with_alpha(0.45)),
+        (0.4, Color::from_rgb8(0xff, 0xb0, 0x90).with_alpha(0.15)),
+        (1.0, Color::from_rgb8(0xff, 0xb0, 0x90).with_alpha(0.0)),
+    ]);
+    scene.fill(Fill::NonZero, id, &bloom, None, &rect);
+    scene.pop_layer();
+}
+
+/// Cartoon cel painting for characters and props: a flat colour with a crisp
+/// shadow shape on the side away from the light, a small highlight and a bold
+/// ink outline, in the style of 1930s animation.
+pub fn cel(scene: &mut Scene, path: &BezPath, color: Color, shadow: Option<&Gradient>, size: f64, seed: u64, anchor: Point) {
+    let body = wobble(path, (size * 0.01).clamp(0.2, 1.2), seed, anchor);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &body);
+    if let Some(g) = shadow {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &body);
+    }
+    ink(scene, path, size, seed, anchor);
+}
+
+/// Crisp cel shadow for round things: a hard-edged crescent away from the light.
+pub fn ball_cel(center: Point, radius: f64, color: Color) -> Gradient {
+    let hot = center + Vec2::new(-0.45, -0.55) * radius * 0.45;
+    let shadow = cool_shadow(color);
+    Gradient::new_two_point_radial(hot, 0.0_f32, center, (radius * 1.1) as f32).with_stops([
+        (0.0, LIGHT_TINT.with_alpha(0.45)),
+        (0.12, LIGHT_TINT.with_alpha(0.45)),
+        (0.13, shadow.with_alpha(0.0)),
+        (0.72, shadow.with_alpha(0.0)),
+        (0.73, shadow.with_alpha(0.85)),
+        (1.0, shadow.with_alpha(0.85)),
+    ])
+}
+
+/// Crisp cel shadow along a tube.
+pub fn tube_cel(mid: Point, axis: Vec2, width: f64, color: Color) -> Gradient {
+    let mut n = Vec2::new(-axis.y, axis.x);
+    n = if n.hypot() > 1e-9 { n.normalize() } else { Vec2::new(1.0, 0.0) };
+    if n.dot(Vec2::new(-0.45, -0.55)) < 0.0 {
+        n = -n;
+    }
+    let shadow = cool_shadow(color);
+    Gradient::new_linear(mid + n * width, mid - n * width).with_stops([
+        (0.0, shadow.with_alpha(0.0)),
+        (0.62, shadow.with_alpha(0.0)),
+        (0.63, shadow.with_alpha(0.85)),
+        (1.0, shadow.with_alpha(0.85)),
+    ])
 }

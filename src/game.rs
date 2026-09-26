@@ -1,8 +1,8 @@
 //! Game state and the frame loop shared by the window and terminal frontends.
 
-use glam::{DQuat, DVec2, DVec3};
+use glam::{DMat3, DQuat, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
 
 use crate::camel_joe::{self, Animator, Look, Motion};
@@ -380,7 +380,7 @@ impl Game {
         canvas.finish(scene);
 
         self.draw_hud(scene, w, h);
-        crate::paint::paper(scene, w, h);
+        crate::paint::grade(scene, w, h);
         if self.flash > 0.0 {
             scene.fill(
                 Fill::NonZero,
@@ -406,6 +406,37 @@ impl Game {
             rot = tilt * rot;
             feet = DVec3::new(mouth.x, mouth.y, 0.0) - tilt * DVec3::new(0.0, MOUTH_HEIGHT, 0.0);
         }
+        // A soft violet contact shadow on the ground below, shrinking and
+        // fading as Joe gets higher.
+        let ground = self
+            .level
+            .blocks
+            .iter()
+            .filter(|b| b.x0 <= p.pos.x && p.pos.x <= b.x1 && b.y1 <= p.pos.y + 0.05)
+            .map(|b| b.y1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let fade = (1.0 - (p.pos.y - ground) / 6.0).clamp(0.0, 1.0);
+        if fade > 0.0 {
+            let center = DVec3::new(p.pos.x, ground, 0.15);
+            let size = 0.6 + 0.4 * fade;
+            let ellipse = canvas.project_ellipsoid(
+                center,
+                DMat3::from_cols(DVec3::X * 0.8 * size, DVec3::Z * 0.45 * size, DVec3::Y * 1e-3),
+            );
+            let shape = Affine::translate(ellipse.center().to_vec2())
+                * Affine::rotate(ellipse.rotation())
+                * Affine::scale_non_uniform(ellipse.radii().x, ellipse.radii().y);
+            let shadow = Gradient::new_radial((0.0, 0.0), 1.0).with_stops([
+                (0.0, Color::from_rgb8(0x2e, 0x22, 0x4a).with_alpha(0.5 * fade as f32)),
+                (0.6, Color::from_rgb8(0x2e, 0x22, 0x4a).with_alpha(0.3 * fade as f32)),
+                (1.0, Color::from_rgb8(0x2e, 0x22, 0x4a).with_alpha(0.0)),
+            ]);
+            let depth = canvas.depth_of(DVec3::new(p.pos.x, ground, 0.6));
+            canvas.push(depth, move |scene| {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow, Some(shape), &ellipse);
+            });
+        }
+
         let root = camel_joe::root(feet, rot, self.squash);
         let solved = Solved::solve(&self.skeleton, &pose, root);
         let look = Look {
