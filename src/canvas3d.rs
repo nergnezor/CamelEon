@@ -124,8 +124,8 @@ impl<'a> Canvas3d<'a> {
         let seed = color_seed(color, radius);
         self.push(p.depth, move |scene| {
             let circle = Circle::new(p.pos, r).to_path(0.1);
-            paint::wash(scene, &circle, color, Some(&paint::ball_glaze(p.pos, r, color)), r * 2.0, seed);
-            paint::ink(scene, &circle, r * 2.0, seed);
+            paint::wash(scene, &circle, color, Some(&paint::ball_glaze(p.pos, r, color)), r * 2.0, seed, p.pos);
+            paint::ink(scene, &circle, r * 2.0, seed, p.pos);
         });
     }
 
@@ -137,8 +137,8 @@ impl<'a> Canvas3d<'a> {
         let seed = color_seed(color, axes.x_axis.length() + axes.y_axis.length());
         self.push(p.depth, move |scene| {
             let path = ellipse.to_path(0.1);
-            paint::wash(scene, &path, color, Some(&paint::ball_glaze(p.pos, r, color)), r * 2.0, seed);
-            paint::ink(scene, &path, r * 2.0, seed);
+            paint::wash(scene, &path, color, Some(&paint::ball_glaze(p.pos, r, color)), r * 2.0, seed, p.pos);
+            paint::ink(scene, &path, r * 2.0, seed, p.pos);
         });
     }
 
@@ -177,8 +177,8 @@ impl<'a> Canvas3d<'a> {
         let seed = color_seed(color, ra + rb * 3.0);
         self.push(depth, move |scene| {
             let glaze = paint::tube_glaze(pa.pos.midpoint(pb.pos), axis, width, color);
-            paint::wash(scene, &path, color, Some(&glaze), width * 2.0, seed);
-            paint::ink(scene, &path, width * 2.0, seed);
+            paint::wash(scene, &path, color, Some(&glaze), width * 2.0, seed, pa.pos);
+            paint::ink(scene, &path, width * 2.0, seed, pa.pos);
         });
     }
 
@@ -245,8 +245,8 @@ impl<'a> Canvas3d<'a> {
             }
             // Also continue the other half up to this point so there is no gap.
             if let Some(was) = prev_front {
-                if was != is_front {
-                    let other = if was { &mut front } else { &mut back };
+                let other = if was { &mut front } else { &mut back };
+                if was != is_front && !other.elements().is_empty() {
                     other.line_to(screen);
                 }
             }

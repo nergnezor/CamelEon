@@ -12,6 +12,10 @@ const HEIGHT: f64 = 1.8;
 pub const MOUTH_HEIGHT: f64 = 1.45;
 
 const RUN_SPEED: f64 = 7.0;
+/// Top speed multiplier gained by running flat out for a while.
+const MAX_BOOST: f64 = 1.45;
+/// How fast the boost builds while running flat out (per second).
+const BOOST_RATE: f64 = 0.28;
 const GROUND_ACCEL: f64 = 60.0;
 const AIR_ACCEL: f64 = 28.0;
 const GRAVITY: f64 = 32.0;
@@ -26,8 +30,10 @@ const FLY_RANGE: f64 = 5.0;
 
 #[derive(Default, Clone, Copy)]
 pub struct Controls {
-    pub left: bool,
-    pub right: bool,
+    /// Analog horizontal input, −1 (left) to 1 (right).
+    pub x: f64,
+    /// Analog vertical input, −1 (down) to 1 (up).
+    pub y: f64,
     pub up: bool,
     pub down: bool,
     pub jump: bool,
@@ -81,6 +87,9 @@ pub struct Player {
     pub idle: f64,
     /// Advances with distance moved; drives the walk and climb cycles.
     pub stride: f64,
+    /// 0..1: builds up while running flat out, raising top speed and
+    /// acceleration, so Joe goes faster and faster.
+    pub boost: f64,
 }
 
 impl Player {
@@ -96,6 +105,7 @@ impl Player {
             jump_buffer: 0.0,
             idle: 0.0,
             stride: 0.0,
+            boost: 0.0,
         }
     }
 
@@ -111,9 +121,9 @@ impl Player {
 
     pub fn update(&mut self, dt: f64, c: &Controls, level: &Level, flies: &[DVec2], caught: &[bool]) -> Events {
         let mut events = Events::default();
-        let dir = c.right as i32 as f64 - c.left as i32 as f64;
-        if dir != 0.0 && !matches!(self.state, State::Climbing(_)) {
-            self.facing = dir;
+        let dir = c.x.clamp(-1.0, 1.0);
+        if dir.abs() > 0.1 && !matches!(self.state, State::Climbing(_)) {
+            self.facing = dir.signum();
         }
         self.jump_buffer = if c.jump_pressed { JUMP_BUFFER } else { (self.jump_buffer - dt).max(0.0) };
 
@@ -146,8 +156,18 @@ impl Player {
             }
         }
 
-        let accel = if self.on_ground { GROUND_ACCEL } else { AIR_ACCEL };
-        self.vel.x = approach(self.vel.x, dir * RUN_SPEED, accel * dt);
+        // Momentum: keep pushing the same way at speed and the boost builds;
+        // stopping, turning or hitting a wall loses it (only on the ground,
+        // so a jump keeps the speed).
+        let flat_out = dir.abs() > 0.6 && dir * self.vel.x > RUN_SPEED * 0.85;
+        if flat_out && self.on_ground {
+            self.boost = (self.boost + BOOST_RATE * dt * (1.0 + self.boost)).min(1.0);
+        } else if self.on_ground && !flat_out {
+            self.boost = (self.boost - 1.5 * dt).max(0.0);
+        }
+        let top = RUN_SPEED * (1.0 + MAX_BOOST * self.boost);
+        let accel = if self.on_ground { GROUND_ACCEL } else { AIR_ACCEL } * (1.0 + self.boost);
+        self.vel.x = approach(self.vel.x, dir * top, accel * dt);
         self.coyote = if self.on_ground { COYOTE_TIME } else { (self.coyote - dt).max(0.0) };
 
         if self.jump_buffer > 0.0 && self.coyote > 0.0 {
@@ -159,13 +179,13 @@ impl Player {
         // Releasing jump early makes a shorter hop.
         let gravity = if self.vel.y > 0.0 && !c.jump { GRAVITY * 2.2 } else { GRAVITY };
         self.vel.y = (self.vel.y - gravity * dt).max(-MAX_FALL);
-        self.stride += self.vel.x.abs() * dt * 1.6;
+        self.stride += self.vel.x.abs() * dt * 2.4;
         self.move_and_collide(dt, level, events);
     }
 
     fn update_climbing(&mut self, dt: f64, dir: f64, c: &Controls, level: &Level, i: usize, events: &mut Events) {
         let climbable = level.climbables[i];
-        let vy = (c.up as i32 - c.down as i32) as f64 * CLIMB_SPEED;
+        let vy = c.y.clamp(-1.0, 1.0) * CLIMB_SPEED;
         self.vel = DVec2::new(0.0, vy);
         self.pos.x = approach(self.pos.x, climbable.x, 8.0 * dt);
         self.pos.y += vy * dt;
@@ -174,8 +194,8 @@ impl Player {
         if self.jump_buffer > 0.0 {
             self.jump_buffer = 0.0;
             self.state = State::Normal;
-            if dir != 0.0 {
-                self.facing = dir;
+            if dir.abs() > 0.1 {
+                self.facing = dir.signum();
             }
             self.vel = DVec2::new(dir * RUN_SPEED * 0.8, JUMP_SPEED * 0.8);
             events.jumped = true;
@@ -235,7 +255,7 @@ impl Player {
             events.jumped = true;
             return;
         }
-        length = (length + (c.down as i32 - c.up as i32) as f64 * 3.0 * dt).clamp(1.5, TONGUE_RANGE);
+        length = (length - c.y.clamp(-1.0, 1.0) * 3.0 * dt).clamp(1.5, TONGUE_RANGE);
         self.state = State::Swinging { hook, length };
 
         // Pendulum: integrate freely, then pull back onto the rope's circle and

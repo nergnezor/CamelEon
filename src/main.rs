@@ -7,10 +7,14 @@ mod level;
 mod paint;
 mod player;
 mod rig;
+#[cfg(not(target_arch = "wasm32"))]
 mod snapshot;
+#[cfg(not(target_arch = "wasm32"))]
 mod terminal;
+mod touch;
 mod window;
 
+#[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "\
 Usage: cameljon [MODE]
 
@@ -33,19 +37,29 @@ Gamepad: left stick or d-pad to move and climb, A/Cross to jump,
 X/Square, B/Circle or right trigger for the tongue.";
 
 fn main() {
-    let arg = std::env::args().nth(1);
-    match arg.as_deref() {
-        None => window::run(),
-        Some("--terminal") => terminal::run(terminal::Transfer::default()),
-        Some("--direct") => terminal::run(terminal::Transfer::Direct),
-        Some("--snapshot") => {
-            let args: Vec<String> = std::env::args().skip(2).collect();
-            let out = args.first().map(String::as_str).unwrap_or("snapshot.ppm");
-            snapshot::run(out, args.get(1).map(String::as_str).unwrap_or(""));
-        }
-        Some(_) => {
-            eprintln!("{USAGE}");
-            std::process::exit(2);
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        window::run();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        #[cfg(feature = "hotpatch")]
+        dioxus_devtools::connect_subsecond();
+        let arg = std::env::args().nth(1);
+        match arg.as_deref() {
+            None => window::run(),
+            Some("--terminal") => terminal::run(terminal::Transfer::default()),
+            Some("--direct") => terminal::run(terminal::Transfer::Direct),
+            Some("--snapshot") => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                let out = args.first().map(String::as_str).unwrap_or("snapshot.ppm");
+                snapshot::run(out, args.get(1).map(String::as_str).unwrap_or(""));
+            }
+            Some(_) => {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
         }
     }
 }

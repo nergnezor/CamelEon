@@ -60,7 +60,6 @@ const SCARF: Color = Color::from_rgb8(0x5b, 0x3f, 0x8c);
 const STRAW: Color = Color::from_rgb8(0xd8, 0xab, 0x3c);
 const POMPOM: Color = Color::from_rgb8(0x6b, 0x5b, 0x8a);
 const CREST: Color = Color::from_rgb8(0xe8, 0x5d, 0x3f);
-const IRIS: Color = Color::from_rgb8(0xf6, 0xe7, 0x6a);
 const EYEBALL: Color = Color::from_rgb8(0xfb, 0xf4, 0xe4);
 
 /// The hat's colour bands, from the brim up.
@@ -89,14 +88,14 @@ pub fn skeleton() -> Skeleton {
         b(HAT[0], 0.0, 0.18, 0.0),                  // HAT[1]
         b(HAT[1], 0.0, 0.16, 0.0),                  // HAT[2]
         b(HAT[2], 0.0, 0.12, 0.0),                  // HAT[3]: tip
-        b(HEAD, -0.22, 0.06, 0.04),                 // EYE_L
-        b(HEAD, 0.22, 0.06, 0.04),                  // EYE_R
-        b(CHEST, -0.2, 0.1, 0.0),                   // SHOULDER_L
-        b(SHOULDER_L, 0.0, -0.22, 0.0),             // ELBOW_L
-        b(ELBOW_L, 0.0, -0.2, 0.0),                 // HAND_L
-        b(CHEST, 0.2, 0.1, 0.0),                    // SHOULDER_R
-        b(SHOULDER_R, 0.0, -0.22, 0.0),             // ELBOW_R
-        b(ELBOW_R, 0.0, -0.2, 0.0),                 // HAND_R
+        b(HEAD, -0.24, 0.07, 0.05),                 // EYE_L
+        b(HEAD, 0.24, 0.07, 0.05),                  // EYE_R
+        b(CHEST, -0.2, 0.1, 0.06),                  // SHOULDER_L
+        b(SHOULDER_L, 0.0, -0.27, 0.0),             // ELBOW_L
+        b(ELBOW_L, 0.0, -0.25, 0.0),                // HAND_L
+        b(CHEST, 0.2, 0.1, 0.06),                   // SHOULDER_R
+        b(SHOULDER_R, 0.0, -0.27, 0.0),             // ELBOW_R
+        b(ELBOW_R, 0.0, -0.25, 0.0),                // HAND_R
         b(PELVIS, -0.12, -0.02, 0.0),               // HIP_L
         b(HIP_L, 0.0, -0.3, 0.0),                   // KNEE_L
         b(KNEE_L, 0.0, -0.3, 0.0),                  // FOOT_L
@@ -232,74 +231,83 @@ fn rz(a: f64) -> DQuat {
 
 // Animation clips. Conventions: limbs hang along −y, so a negative rotation
 // about x swings them forward; a positive rotation about z swings them to +x.
+//
+// Joe walks on all fours by default (idle, run, air) and rears up on the hind
+// legs to climb and swing; blending between the two makes Joe stand up.
+
+/// Tips the body forward onto all fours: the spine becomes horizontal and the
+/// legs, neck and tail are turned back to hang/point the right way.
+fn on_all_fours() -> Pose {
+    let mut p = Pose::rest(COUNT);
+    let upright = PI / 2.0;
+    p.rotate(PELVIS, rx(upright));
+    for b in [SHOULDER_L, SHOULDER_R, HIP_L, HIP_R] {
+        p.rotate(b, rx(-upright));
+    }
+    p.rotate(NECK, rx(-upright + 0.12));
+    p.rotate(TAIL[0], rx(-upright + 0.2));
+    p
+}
 
 fn idle(m: &Motion) -> Pose {
-    let mut p = Pose::rest(COUNT);
+    let mut p = on_all_fours();
     let breath = (m.time * 2.2).sin();
-    p.rotate(CHEST, rx(0.03 * breath));
-    p.rotate(NECK, rx(0.05));
-    p.rotate(NECK2, rx(-0.2 - 0.04 * breath));
-    p.rotate(HEAD, rx(0.25 - 0.05 * breath) * rz(0.1 * (m.time * 0.7).sin()));
-    // Hands on hips.
-    p.rotate(SHOULDER_L, rz(-0.75) * rx(0.2));
-    p.rotate(ELBOW_L, rz(1.7));
-    p.rotate(SHOULDER_R, rz(0.75) * rx(0.2));
-    p.rotate(ELBOW_R, rz(-1.7));
-    p.rotate(HIP_L, rz(-0.08));
-    p.rotate(HIP_R, rz(0.08));
-    p.rotate(TAIL[0], ry(-0.8));
+    p.rotate(CHEST, rx(0.02 * breath));
+    p.rotate(NECK2, rx(-0.05 - 0.04 * breath));
+    // Looking around lazily.
+    p.rotate(HEAD, rx(0.1 - 0.04 * breath) * ry(0.25 * (m.time * 0.4).sin()) * rz(0.08 * (m.time * 0.7).sin()));
+    p.rotate(TAIL[0], ry(-0.4));
     for (i, &b) in TAIL.iter().enumerate() {
-        p.rotate(b, rx(0.45 + 0.06 * (m.time * 1.5 + i as f64 * 0.5).sin()));
+        p.rotate(b, rx(0.42 + 0.06 * (m.time * 1.5 + i as f64 * 0.5).sin()));
     }
     p
 }
 
 fn run(m: &Motion) -> Pose {
-    let mut p = Pose::rest(COUNT);
+    let mut p = on_all_fours();
     let s = m.stride;
-    p.rotate(PELVIS, rx(0.22));
-    p.rotate(CHEST, ry(s.sin() * 0.25));
-    // The camel head bob: the neck pumps twice per stride.
+    // Camels pace: both legs on one side move together, which makes the body
+    // rock from side to side.
+    p.rotate(PELVIS, ry(s.sin() * 0.1));
     let bob = (s * 2.0).sin();
-    p.rotate(NECK, rx(0.25 + bob * 0.1));
-    p.rotate(NECK2, rx(-0.3 - bob * 0.12));
-    p.rotate(HEAD, rx(0.1) * ry(-s.sin() * 0.2));
+    p.rotate(NECK, rx(0.25 + bob * 0.08));
+    p.rotate(NECK2, rx(-0.2 - bob * 0.1));
+    p.rotate(HEAD, rx(0.12));
     for (hip, knee, shoulder, elbow, phase) in [
         (HIP_L, KNEE_L, SHOULDER_L, ELBOW_L, 0.0),
         (HIP_R, KNEE_R, SHOULDER_R, ELBOW_R, PI),
     ] {
         let swing = (s + phase).sin();
-        p.rotate(hip, rx(-swing * 0.9 - 0.2));
-        p.rotate(knee, rx(0.3 + 1.3 * (s + phase + PI / 2.0).sin().max(0.0)));
-        let side = if hip == HIP_L { -1.0 } else { 1.0 };
-        p.rotate(shoulder, rx(swing * 0.9) * rz(side * 0.3));
-        p.rotate(elbow, rx(-1.2));
+        // The foot lifts while the leg swings forward.
+        let lift = (s + phase).cos().max(0.0);
+        p.rotate(hip, rx(-swing * 0.55));
+        p.rotate(knee, rx(0.1 + lift * 1.0));
+        p.rotate(shoulder, rx(-swing * 0.55));
+        p.rotate(elbow, rx(0.1 + lift * 1.1));
     }
     for (i, &b) in TAIL.iter().enumerate() {
-        p.rotate(b, rx(0.18) * ry((s * 0.5 + i as f64 * 0.6).sin() * 0.12));
+        p.rotate(b, rx(0.2) * ry((s + i as f64 * 0.6).sin() * 0.12));
     }
     p
 }
 
 fn air(m: &Motion) -> Pose {
-    let mut p = Pose::rest(COUNT);
-    // Tuck when rising, stretch out when falling.
+    let mut p = on_all_fours();
+    // A leap: stretched out while rising, legs reaching down while falling.
     let fall = (-m.vel.y / 10.0).clamp(0.0, 1.0);
-    p.rotate(PELVIS, rx(0.1));
-    p.rotate(NECK, rx(-0.15 + 0.3 * fall));
-    p.rotate(HEAD, rx(0.25 * fall));
-    for (hip, knee, side) in [(HIP_L, KNEE_L, -1.0), (HIP_R, KNEE_R, 1.0)] {
-        p.rotate(hip, rx(-1.0 + 0.8 * fall) * rz(side * 0.25));
-        p.rotate(knee, rx(1.6 - 1.2 * fall));
-    }
-    // Cartoon flailing.
-    for (shoulder, elbow, side) in [(SHOULDER_L, ELBOW_L, -1.0), (SHOULDER_R, ELBOW_R, 1.0)] {
-        let flail = (m.time * 22.0 + side).sin() * 0.45;
-        p.rotate(shoulder, rz(side * (2.3 + flail)));
-        p.rotate(elbow, rx(-0.6 + flail));
+    let stretch = 1.0 - fall;
+    p.rotate(PELVIS, rx(-0.15 * stretch));
+    p.rotate(NECK, rx(-0.15 * stretch));
+    p.rotate(NECK2, rx(-0.25));
+    p.rotate(HEAD, rx(0.2 * fall));
+    for (hip, knee, shoulder, elbow) in [(HIP_L, KNEE_L, SHOULDER_L, ELBOW_L), (HIP_R, KNEE_R, SHOULDER_R, ELBOW_R)] {
+        p.rotate(hip, rx(0.8 * stretch - 0.2 * fall));
+        p.rotate(knee, rx(0.3 + 0.3 * fall));
+        p.rotate(shoulder, rx(-0.9 * stretch + 0.1 * fall));
+        p.rotate(elbow, rx(0.9 * stretch + 0.3 * fall));
     }
     for &b in &TAIL {
-        p.rotate(b, rx(0.6));
+        p.rotate(b, rx(0.5));
     }
     p
 }
@@ -446,9 +454,12 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
     for (shoulder, elbow, hand) in [(SHOULDER_L, ELBOW_L, HAND_L), (SHOULDER_R, ELBOW_R, HAND_R)] {
         canvas.capsule(s.pos[shoulder], 0.06 * k, s.pos[elbow], 0.042 * k, fur);
         canvas.capsule(s.pos[elbow], 0.042 * k, s.pos[hand], 0.038 * k, fur);
-        canvas.sphere(s.pos[elbow], 0.05 * k, PAD);
+        // Camels have callused pads on their front knees.
+        canvas.sphere(s.at(elbow, DVec3::new(0.0, 0.0, 0.03)), 0.055 * k, PAD);
+        canvas.ellipsoid(s.at(hand, DVec3::new(0.0, -0.02, 0.04)), axes(s.rot[hand], DVec3::new(0.075, 0.028, 0.095), s.root.scale), PAD);
         for side in [-1.0, 1.0] {
-            canvas.sphere(s.at(hand, DVec3::new(side * 0.035, -0.035, 0.02)), 0.042 * k, fur);
+            let toe = s.at(hand, DVec3::new(side * 0.04, -0.01, 0.085));
+            canvas.ellipsoid(toe, axes(s.rot[hand], DVec3::new(0.04, 0.036, 0.08), s.root.scale), fur);
         }
     }
 
@@ -646,7 +657,8 @@ fn draw_hat(canvas: &mut Canvas3d, s: &Solved, head_depth: f64, k: f64) {
             }
             for j in (0..=steps).rev() {
                 if hi[j].1 == front {
-                    strip.line_to(hi[j].0);
+                    if open { strip.line_to(hi[j].0) } else { strip.move_to(hi[j].0) }
+                    open = true;
                 }
             }
             if open {
@@ -663,13 +675,14 @@ fn draw_hat(canvas: &mut Canvas3d, s: &Solved, head_depth: f64, k: f64) {
     );
     let zig_px = 0.03 * cam.project(pts[1]).scale;
     let size = radii[0] * projected[0].scale;
+    let anchor = projected[0].pos;
 
     canvas.push(head_depth - 0.002, move |scene| {
-        crate::paint::wash(scene, &silhouette, HAT_BANDS[5], None, size * 2.0, 17);
+        crate::paint::wash(scene, &silhouette, HAT_BANDS[5], None, size * 2.0, 17, anchor);
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &silhouette);
         for (i, (strip, color, front)) in strips.iter().enumerate() {
             let color = if *front { *color } else { darken(*color, 0.2) };
-            crate::paint::wash(scene, strip, color, None, size, 100 + i as u64);
+            crate::paint::wash(scene, strip, color, None, size, 100 + i as u64, anchor);
         }
         scene.stroke(
             &Stroke::new(zig_px).with_dashes(0.0, [zig_px, zig_px * 1.2]),
@@ -679,7 +692,7 @@ fn draw_hat(canvas: &mut Canvas3d, s: &Solved, head_depth: f64, k: f64) {
             &zig,
         );
         scene.pop_layer();
-        crate::paint::ink(scene, &silhouette, size * 2.0, 17);
+        crate::paint::ink(scene, &silhouette, size * 2.0, 17, anchor);
     });
     canvas.sphere(s.at(HAT[3], DVec3::new(0.0, 0.03, 0.0)), 0.055 * k, POMPOM);
 }
@@ -772,67 +785,130 @@ fn draw_eyes(canvas: &mut Canvas3d, s: &Solved, fur: Color, shade: Color, k: f64
     for (eye, side, phase) in [(EYE_L, -1.0, 0.0), (EYE_R, 1.0, 0.43)] {
         let center = s.pos[eye];
         let base = s.at(HEAD, DVec3::new(side * 0.1, 0.06, 0.04));
-        canvas.capsule(base, 0.07 * k, center, 0.095 * k, shade);
-        canvas.sphere(center, 0.11 * k, fur);
+        canvas.capsule(base, 0.08 * k, center, 0.12 * k, shade);
+        canvas.sphere(center, 0.14 * k, fur);
 
         let gaze = s.rot[eye] * DVec3::Z;
-        if !cam.faces(center + gaze * 0.11, gaze) {
+        if !cam.faces(center + gaze * 0.14, gaze) {
             continue;
         }
-        // Eye white, iris and pupil are discs on the eyeball, facing along the gaze.
+        // The eye is drawn in a small plane on the eyeball facing along the
+        // gaze, with "up" aligned to the head so the lids sit right.
         let (u, v) = {
-            // Keep the disc's "up" aligned with the head so the lid sits on top.
             let up = s.dir(HEAD, DVec3::Y);
             let u = up.cross(gaze).normalize_or(DVec3::X);
             (u, gaze.cross(u))
         };
-        let disc = |radius: f64, out: f64| {
-            let c = center + gaze * out * k;
-            canvas.project_ellipsoid(c, DMat3::from_cols(u * radius * k, v * radius * k, gaze * 1e-4))
-        };
-        let white = disc(0.078, 0.1);
-        let iris = disc(0.052, 0.108);
-        let pupil = disc(0.026, 0.112);
-        // The heavy camel eyelid covers the top of the eye; its edge is a line
-        // across the eye, lower when blinking.
-        let lid_drop = 0.25 + 0.75 * blink(phase);
-        let at = |x: f64, y: f64| cam.point(center + gaze * 0.11 * k + (u * x + v * y) * 0.09 * k);
-        let lid_edge = [at(-1.2, 1.0 - 2.0 * lid_drop * 0.55), at(0.0, 1.0 - 2.0 * lid_drop * 0.7), at(1.2, 1.0 - 2.0 * lid_drop * 0.55)];
-        let mut lid = BezPath::new();
-        lid.move_to(at(-1.5, 1.6));
-        lid.line_to(at(-1.2, 1.0 - 2.0 * lid_drop * 0.55));
-        lid.quad_to(lid_edge[1], lid_edge[2]);
-        lid.line_to(at(1.5, 1.6));
-        lid.close_path();
-        let mut edge = BezPath::new();
-        edge.move_to(lid_edge[0]);
-        edge.quad_to(lid_edge[1], lid_edge[2]);
-        // Long lashes curling out from the lid edge.
-        let lashes: Vec<BezPath> = (0..4)
+        let size = 0.115 * k;
+        let at = move |x: f64, y: f64| cam.point(center + gaze * 0.135 * k + (u * x + v * y) * size);
+        let scale = (at(1.0, 0.0) - at(0.0, 0.0)).hypot();
+        let eye_center = at(0.0, 0.0);
+
+        // Almond-shaped opening; the heavy upper lid comes down when blinking.
+        let open = 1.0 - blink(phase);
+        let top = 0.2 + 0.75 * open;
+        let mut opening = BezPath::new();
+        opening.move_to(at(-1.15, -0.05));
+        opening.curve_to(at(-0.6, top), at(0.5, top + 0.05), at(1.15, 0.05));
+        opening.curve_to(at(0.6, -0.72), at(-0.55, -0.7), at(-1.15, -0.05));
+        opening.close_path();
+        let mut lid_edge = BezPath::new();
+        lid_edge.move_to(at(-1.15, -0.05));
+        lid_edge.curve_to(at(-0.6, top), at(0.5, top + 0.05), at(1.15, 0.05));
+        let mut crease = BezPath::new();
+        crease.move_to(at(-1.1, 0.35));
+        crease.curve_to(at(-0.5, top + 0.55), at(0.5, top + 0.6), at(1.1, 0.45));
+        let mut lower_rim = BezPath::new();
+        lower_rim.move_to(at(-1.1, -0.1));
+        lower_rim.curve_to(at(-0.55, -0.72), at(0.6, -0.74), at(1.12, 0.02));
+
+        // Big dark iris with a horizontal oval pupil, like a real camel's.
+        let iris_c = at(0.02, -0.06);
+        let iris = canvas.project_ellipsoid(
+            center + gaze * 0.136 * k + (u * 0.02 - v * 0.06) * size,
+            DMat3::from_cols(u * 0.72 * size, v * 0.72 * size, gaze * 1e-4),
+        );
+        let pupil = canvas.project_ellipsoid(
+            center + gaze * 0.137 * k + (u * 0.02 - v * 0.08) * size,
+            DMat3::from_cols(u * 0.34 * size, v * 0.15 * size, gaze * 1e-4),
+        );
+        let streaks: Vec<BezPath> = (0..14)
             .map(|i| {
-                let x = -0.75 + i as f64 * 0.5;
-                let y = 1.0 - 2.0 * lid_drop * (0.7 - 0.15 * x.abs());
-                let mut lash = BezPath::new();
-                lash.move_to(at(x, y));
-                lash.quad_to(at(x * 1.3, y - 0.55), at(x * 1.6 + 0.3, y - 0.7));
-                lash
+                let a = i as f64 / 14.0 * std::f64::consts::TAU;
+                let mut l = BezPath::new();
+                l.move_to(at(0.02 + a.cos() * 0.38, -0.06 + a.sin() * 0.38));
+                l.line_to(at(0.02 + a.cos() * 0.66, -0.06 + a.sin() * 0.66));
+                l
             })
             .collect();
+
+        // Long, thick lashes: two rows on the upper lid, short ones below.
+        let mut lashes: Vec<(BezPath, f64)> = Vec::new();
+        for row in 0..2 {
+            let n = 7;
+            for i in 0..n {
+                let t = (i as f64 + 0.5 * row as f64) / (n as f64 - 0.5);
+                let x = -1.0 + 2.0 * t;
+                let y = (1.0 - x * x) * (top - 0.05) - 0.02;
+                let len = (0.55 + 0.35 * (1.0 - x.abs())) * (1.0 - 0.25 * row as f64);
+                let out = 0.45 * x + 0.3;
+                let mut lash = BezPath::new();
+                lash.move_to(at(x, y));
+                lash.quad_to(at(x + out * 0.4, y + len * 0.8), at(x + out * 0.9 + 0.25, y + len * 0.85));
+                lashes.push((lash, if row == 0 { 1.6 } else { 1.1 }));
+            }
+        }
+        for i in 0..5 {
+            let x = -0.6 + i as f64 * 0.3;
+            let y = -0.62 * (1.0 - x * x * 0.8);
+            let mut lash = BezPath::new();
+            lash.move_to(at(x, y));
+            lash.quad_to(at(x * 1.1, y - 0.2), at(x * 1.25 + 0.1, y - 0.3));
+            lashes.push((lash, 0.8));
+        }
+
         let depth = cam.project(center).depth;
-        let glint = cam.point(center + gaze * 0.11 * k + (v * 0.4 - u * 0.4) * 0.09 * k);
         canvas.push(depth - 1e-4, move |scene| {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, EYEBALL, None, &white);
-            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &white);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, IRIS, None, &iris);
-            scene.stroke(&Stroke::new(1.2), Affine::IDENTITY, OUTLINE.with_alpha(0.7), None, &iris);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, OUTLINE, None, &pupil);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &vello::kurbo::Circle::new(glint, 1.5));
-            scene.fill(Fill::NonZero, Affine::IDENTITY, shade, None, &lid);
+            let id = Affine::IDENTITY;
+            // Sclera: barely visible, ivory with pink corners.
+            let sclera = Gradient::new_radial(eye_center, (1.2 * scale) as f32).with_stops([
+                (0.0, EYEBALL),
+                (0.7, EYEBALL),
+                (1.0, Color::from_rgb8(0xd9, 0x9a, 0x8c)),
+            ]);
+            scene.fill(Fill::NonZero, id, &sclera, None, &opening);
+            scene.push_clip_layer(Fill::NonZero, id, &opening);
+            let brown = Gradient::new_radial(iris_c, (0.72 * scale) as f32).with_stops([
+                (0.0, Color::from_rgb8(0x1a, 0x10, 0x0a)),
+                (0.45, Color::from_rgb8(0x4a, 0x2c, 0x18)),
+                (0.85, Color::from_rgb8(0x3a, 0x22, 0x12)),
+                (1.0, Color::from_rgb8(0x14, 0x0c, 0x08)),
+            ]);
+            scene.fill(Fill::NonZero, id, &brown, None, &iris);
+            for streak in &streaks {
+                scene.stroke(&Stroke::new(0.8), id, Color::from_rgb8(0x7a, 0x4e, 0x2a).with_alpha(0.5), None, streak);
+            }
+            scene.fill(Fill::NonZero, id, Color::from_rgb8(0x08, 0x05, 0x04), None, &pupil);
+            // The lid casts a soft shadow onto the top of the eye.
+            let shadow = Gradient::new_linear(at(0.0, top), at(0.0, top - 0.6)).with_stops([
+                Color::from_rgb8(0x20, 0x12, 0x0a).with_alpha(0.6),
+                Color::from_rgb8(0x20, 0x12, 0x0a).with_alpha(0.0),
+            ]);
+            scene.fill(Fill::NonZero, id, &shadow, None, &opening);
+            // Wet highlights: a soft sky reflection and a sharp glint.
+            let sky = Gradient::new_radial(at(-0.3, 0.1), (0.45 * scale) as f32).with_stops([
+                Color::WHITE.with_alpha(0.35),
+                Color::WHITE.with_alpha(0.0),
+            ]);
+            scene.fill(Fill::NonZero, id, &sky, None, &vello::kurbo::Circle::new(at(-0.3, 0.1), 0.45 * scale));
+            scene.fill(Fill::NonZero, id, Color::WHITE.with_alpha(0.95), None, &vello::kurbo::Circle::new(at(-0.28, 0.12), 0.11 * scale));
             scene.pop_layer();
-            scene.stroke(&Stroke::new(1.3), Affine::IDENTITY, OUTLINE.with_alpha(0.8), None, &white);
-            scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, OUTLINE, None, &edge);
-            for lash in &lashes {
-                scene.stroke(&Stroke::new(1.3).with_caps(vello::kurbo::Cap::Round), Affine::IDENTITY, OUTLINE, None, lash);
+            // Lids: pink lower rim, dark upper lid line and the skin crease.
+            scene.stroke(&Stroke::new((0.08 * scale).max(1.0)), id, Color::from_rgb8(0xb8, 0x74, 0x66), None, &lower_rim);
+            scene.stroke(&Stroke::new((0.12 * scale).max(1.4)).with_caps(vello::kurbo::Cap::Round), id, OUTLINE, None, &lid_edge);
+            scene.stroke(&Stroke::new((0.06 * scale).max(0.8)), id, darken(shade, 0.35), None, &crease);
+            for (lash, w) in &lashes {
+                scene.stroke(&Stroke::new(w * (scale / 12.0).clamp(0.6, 1.6)).with_caps(vello::kurbo::Cap::Round), id, OUTLINE, None, lash);
             }
         });
     }
@@ -841,9 +917,9 @@ fn draw_eyes(canvas: &mut Canvas3d, s: &Solved, fur: Color, shade: Color, k: f64
 /// Model-to-world rotation for a heading: `facing` 1 = right, −1 = left, with
 /// values in between turning through the camera (a 3/4 view at the ends).
 pub fn heading(facing: f64, away: f64) -> DQuat {
-    // Yaw that points model +z at world (±1, 0, −0.6); `away` turns Joe to
+    // Yaw that points model +z at world (±1, 0, −0.45); `away` turns Joe to
     // face into the screen (for climbing).
-    let side = DQuat::from_rotation_y(PI - facing * 1.03);
+    let side = DQuat::from_rotation_y(PI - facing * 1.15);
     side.slerp(DQuat::from_rotation_y(0.0), away)
 }
 

@@ -18,4 +18,8 @@ pkgs.mkShell {
   nativeBuildInputs = [ pkgs.pkg-config ];
   buildInputs = runtimeLibs;
   LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
+  # Tools installed with `cargo install` (dx for hot reload, wasm-bindgen).
+  shellHook = ''
+    export PATH="$HOME/.cargo/bin:$PATH"
+  '';
 }

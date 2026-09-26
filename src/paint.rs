@@ -2,10 +2,10 @@
 //! "wet edges" where pigment pools, broken sepia ink lines and a paper texture
 //! multiplied over the whole picture.
 //!
-//! Wobble is driven by a per-shape seed and the position along the outline, so
-//! a shape keeps the same irregular edge from frame to frame.
+//! Wobble is a noise field anchored to each object, so a shape keeps the same
+//! irregular edge from frame to frame while the camera moves.
 
-use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Rect, Stroke, Vec2};
@@ -43,9 +43,39 @@ fn rand01(seed: u64, k: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// Current camera zoom relative to the default, so edge irregularities keep
+/// their size on the object when the camera zooms. Set once per frame.
+static ZOOM: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000); // 1.0
+
+pub fn set_zoom(zoom: f64) {
+    ZOOM.store(zoom.to_bits(), Ordering::Relaxed);
+}
+
+fn zoom() -> f64 {
+    f64::from_bits(ZOOM.load(Ordering::Relaxed))
+}
+
+/// Smooth 2D value noise in [-1, 1].
+fn noise2(x: f64, y: f64, seed: u64) -> f64 {
+    let (xi, yi) = (x.floor(), y.floor());
+    let (tx, ty) = (x - xi, y - yi);
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let corner = |dx: f64, dy: f64| {
+        let k = ((xi + dx) as i64 as u64).wrapping_mul(0x8DA6_B343) ^ ((yi + dy) as i64 as u64).wrapping_mul(0xD816_3841);
+        rand01(seed, k) * 2.0 - 1.0
+    };
+    let a = corner(0.0, 0.0) + (corner(1.0, 0.0) - corner(0.0, 0.0)) * sx;
+    let b = corner(0.0, 1.0) + (corner(1.0, 1.0) - corner(0.0, 1.0)) * sx;
+    a + (b - a) * sy
+}
+
 /// Returns `path` with its outline displaced along the normals by smooth noise
 /// of amplitude `amp` pixels.
-pub fn wobble(path: &BezPath, amp: f64, seed: u64) -> BezPath {
+///
+/// The noise is a field anchored at `anchor` (a screen point that moves with
+/// the object) and scaled with the zoom, so the irregular edge sticks to the
+/// object instead of shimmering when the camera pans or zooms.
+pub fn wobble(path: &BezPath, amp: f64, seed: u64, anchor: Point) -> BezPath {
     let mut polys: Vec<(Vec<Point>, bool)> = Vec::new();
     flatten(path, 0.4, |el| match el {
         PathEl::MoveTo(p) => polys.push((vec![p], false)),
@@ -62,21 +92,26 @@ pub fn wobble(path: &BezPath, amp: f64, seed: u64) -> BezPath {
         _ => {}
     });
 
+    let z = zoom();
+    let field = |p: Point| {
+        let q = (p - anchor) / z;
+        noise2(q.x / 38.0, q.y / 38.0, seed) + 0.4 * noise2(q.x / 15.0, q.y / 15.0, seed ^ 0xabc)
+    };
     let mut out = BezPath::new();
     for (poly, closed) in polys {
         if poly.len() < 2 {
             continue;
         }
-        // Resample so long straight edges wobble too.
-        let mut pts = Vec::with_capacity(poly.len() * 2);
+        // Resample from each corner so long straight edges wobble too; the
+        // samples stay put relative to the corners.
         let n = poly.len();
         let segs = if closed { n } else { n - 1 };
         let perimeter: f64 = (0..segs).map(|i| (poly[(i + 1) % n] - poly[i]).hypot()).sum();
-        let step = (perimeter / 400.0).max(5.0);
+        let step = (perimeter / 3000.0).max(4.0);
+        let mut pts = Vec::with_capacity((perimeter / step) as usize + n);
         for i in 0..segs {
             let (a, b) = (poly[i], poly[(i + 1) % n]);
-            let len = (b - a).hypot();
-            let parts = (len / step).ceil().max(1.0) as usize;
+            let parts = ((b - a).hypot() / step).ceil().max(1.0) as usize;
             for k in 0..parts {
                 pts.push(a.lerp(b, k as f64 / parts as f64));
             }
@@ -84,25 +119,13 @@ pub fn wobble(path: &BezPath, amp: f64, seed: u64) -> BezPath {
         if !closed {
             pts.push(poly[n - 1]);
         }
-
-        // Periodic noise along the outline, with a few octaves.
-        let waves = [(60.0, 1.0), (23.0, 0.45), (9.0, 0.2)].map(|(wavelength, weight)| {
-            let freq = (perimeter / wavelength).round().max(1.0);
-            (freq, weight, rand01(seed, freq as u64) * TAU)
-        });
         let m = pts.len();
-        let mut s = 0.0;
         for i in 0..m {
-            if i > 0 {
-                s += (pts[i] - pts[i - 1]).hypot();
-            }
             let prev = if i == 0 { if closed { pts[m - 1] } else { pts[0] } } else { pts[i - 1] };
             let next = if i + 1 == m { if closed { pts[0] } else { pts[m - 1] } } else { pts[i + 1] };
             let t = next - prev;
             let normal = if t.hypot() > 1e-9 { Vec2::new(-t.y, t.x).normalize() } else { Vec2::ZERO };
-            let phase = s / perimeter.max(1e-9) * TAU;
-            let noise: f64 = waves.iter().map(|(f, w, p)| w * (phase * f + p).sin()).sum();
-            let p = pts[i] + normal * noise * amp;
+            let p = pts[i] + normal * field(pts[i]) * amp;
             if i == 0 {
                 out.move_to(p);
             } else {
@@ -119,12 +142,13 @@ pub fn wobble(path: &BezPath, amp: f64, seed: u64) -> BezPath {
 /// Paints a watercolour wash: two translucent, differently wobbled layers of
 /// pigment, an optional shading glaze, and a darker wet edge. `size` is the
 /// shape's rough size in pixels and scales the irregularity.
-pub fn wash(scene: &mut Scene, path: &BezPath, color: Color, glaze: Option<&Gradient>, size: f64, seed: u64) {
-    wash_with_edge(scene, path, color, glaze, size, seed, 0.55);
+pub fn wash(scene: &mut Scene, path: &BezPath, color: Color, glaze: Option<&Gradient>, size: f64, seed: u64, anchor: Point) {
+    wash_with_edge(scene, path, color, glaze, size, seed, anchor, 0.55);
 }
 
 /// Like `wash`, with control over how strongly pigment pools at the edge
 /// (distant things get softer edges).
+#[allow(clippy::too_many_arguments)]
 pub fn wash_with_edge(
     scene: &mut Scene,
     path: &BezPath,
@@ -132,13 +156,14 @@ pub fn wash_with_edge(
     glaze: Option<&Gradient>,
     size: f64,
     seed: u64,
+    anchor: Point,
     edge_alpha: f32,
 ) {
     let amp = (size * 0.035).clamp(0.3, 6.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.78), None, &wobble(path, amp, seed));
-    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.4), None, &wobble(path, amp * 1.8, seed ^ 0x55));
+    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.78), None, &wobble(path, amp, seed, anchor));
+    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.4), None, &wobble(path, amp * 1.8, seed ^ 0x55, anchor));
     if let Some(g) = glaze {
-        scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &wobble(path, amp * 0.6, seed ^ 0x77));
+        scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &wobble(path, amp * 0.6, seed ^ 0x77, anchor));
     }
     let edge = (size * 0.03).clamp(0.8, 3.5);
     scene.stroke(
@@ -146,7 +171,7 @@ pub fn wash_with_edge(
         Affine::IDENTITY,
         darken(color, 0.3).with_alpha(edge_alpha),
         None,
-        &wobble(path, amp * 0.8, seed ^ 0x33),
+        &wobble(path, amp * 0.8, seed ^ 0x33, anchor),
     );
 }
 
@@ -180,12 +205,12 @@ pub fn tube_glaze(mid: Point, axis: Vec2, width: f64, color: Color) -> Gradient 
 }
 
 /// A loose sepia ink line with gaps, like a quick pen sketch over the paint.
-pub fn ink(scene: &mut Scene, path: &BezPath, size: f64, seed: u64) {
+pub fn ink(scene: &mut Scene, path: &BezPath, size: f64, seed: u64, anchor: Point) {
     let width = (size * 0.05).clamp(0.8, 2.2);
     let dash = (size * 0.6).clamp(12.0, 80.0);
     let offset = rand01(seed, 1) * dash * 3.0;
     let stroke = Stroke::new(width).with_dashes(offset, [dash, dash * 0.12, dash * 0.7, dash * 0.2]);
-    scene.stroke(&stroke, Affine::IDENTITY, INK.with_alpha(0.75), None, &wobble(path, width * 0.6, seed ^ 0x99));
+    scene.stroke(&stroke, Affine::IDENTITY, INK.with_alpha(0.75), None, &wobble(path, width * 0.6, seed ^ 0x99, anchor));
 }
 
 /// Cold-pressed watercolour paper: a tileable grain texture.

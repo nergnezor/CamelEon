@@ -75,7 +75,7 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
             (0.7, tint.with_alpha(0.07)),
             (1.0, tint.with_alpha(0.0)),
         ]);
-        let blotch = paint::wobble(&Circle::new(c, r).to_path(1.0), r * 0.12, k as u64);
+        let blotch = paint::wobble(&Circle::new(c, r).to_path(1.0), r * 0.12, k as u64, c);
         scene.fill(Fill::NonZero, Affine::IDENTITY, &bloom, None, &blotch);
     }
 
@@ -105,7 +105,8 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
         hills.line_to((w + 100.0, h + 100.0));
         hills.line_to((-100.0, h + 100.0));
         hills.close_path();
-        paint::wash_with_edge(scene, &hills, color, None, 160.0, li as u64 + 7, 0.1 + 0.08 * li as f32);
+        let anchor = cam.point(DVec3::new(0.0, layer.base, layer.z));
+        paint::wash_with_edge(scene, &hills, color, None, 160.0, li as u64 + 7, anchor, 0.1 + 0.08 * li as f32);
 
         if layer.tree_spacing > 0.0 {
             let first = (x0 / layer.tree_spacing).floor() as i64 - 1;
@@ -150,12 +151,13 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
 /// A broadleaf tree in local units (y up, base at the origin, ~1 unit tall).
 fn draw_tree(scene: &mut Scene, tf: Affine, color: Color, variant: f64, size: f64, seed: u64) {
     let trunk = tf * Rect::new(-0.06, 0.0, 0.06, 0.6).to_path(0.1);
-    paint::wash_with_edge(scene, &trunk, darken(color, 0.25), None, size * 0.2, seed, 0.15);
+    let anchor = tf * Point::ORIGIN;
+    paint::wash_with_edge(scene, &trunk, darken(color, 0.25), None, size * 0.2, seed, anchor, 0.15);
     let blobs = [(0.0, 0.75, 0.3), (-0.22, 0.62, 0.22), (0.22, 0.64, 0.24), (0.05 * variant, 0.95, 0.22)];
     for (i, (x, y, r)) in blobs.iter().enumerate() {
         let c = if i % 2 == 0 { color } else { lighten(color, 0.08) };
         let blob = tf * Circle::new((*x, *y), *r).to_path(0.01);
-        paint::wash_with_edge(scene, &blob, c, None, size * r * 2.0, seed ^ i as u64, 0.2);
+        paint::wash_with_edge(scene, &blob, c, None, size * r * 2.0, seed ^ i as u64, anchor, 0.2);
     }
 }
 
@@ -168,7 +170,8 @@ fn draw_palm(scene: &mut Scene, tf: Affine, color: Color, sway: f64, size: f64, 
     trunk.line_to(top + Vec2::new(0.025, 0.0));
     trunk.quad_to(Point::new(0.14, 0.5), Point::new(0.04, 0.0));
     trunk.close_path();
-    paint::wash_with_edge(scene, &(tf * trunk), darken(color, 0.2), None, size * 0.1, seed, 0.15);
+    let anchor = tf * Point::ORIGIN;
+    paint::wash_with_edge(scene, &(tf * trunk), darken(color, 0.2), None, size * 0.1, seed, anchor, 0.15);
     for k in 0..7 {
         let a = PI * (0.05 + k as f64 / 6.0 * 0.9) + sway;
         let tip = top + Vec2::new(a.cos() * 0.45, a.sin() * 0.18 - 0.2);
@@ -177,7 +180,7 @@ fn draw_palm(scene: &mut Scene, tf: Affine, color: Color, sway: f64, size: f64, 
         frond.move_to(top);
         frond.quad_to(mid + Vec2::new(0.0, 0.06), tip);
         frond.quad_to(mid - Vec2::new(0.0, 0.02), top);
-        paint::wash_with_edge(scene, &(tf * frond), lighten(color, 0.04), None, size * 0.3, seed ^ k as u64, 0.2);
+        paint::wash_with_edge(scene, &(tf * frond), lighten(color, 0.04), None, size * 0.3, seed ^ k as u64, anchor, 0.2);
     }
 }
 
@@ -245,7 +248,7 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     if cam.eye.y < y0 {
         faces.push((quad(p(b.x0, y0, b.z0), p(b.x1, y0, b.z0), p(b.x1, y0, b.z1), p(b.x0, y0, b.z1)), darken(side, 0.3)));
     }
-    let side_face = |x: f64| quad(p(x, y0, b.z0), p(x, b.y1, b.z0), p(x, b.y1, b.z1), p(x, y0, b.z1));
+    let side_face = |x: f64| quad(p(x, b.y1, b.z0), p(x, b.y1, b.z1), p(x, y0, b.z1), p(x, y0, b.z0));
     if cam.eye.x < b.x0 {
         faces.push((side_face(b.x0), side));
     }
@@ -255,7 +258,8 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     if cam.eye.y > b.y1 {
         faces.push((quad(p(b.x0, b.y1, b.z0), p(b.x1, b.y1, b.z0), p(b.x1, b.y1, b.z1), p(b.x0, b.y1, b.z1)), top));
     }
-    let front_face = quad(p(b.x0, y0, b.z0), p(b.x1, y0, b.z0), p(b.x1, b.y1, b.z0), p(b.x0, b.y1, b.z0));
+    let front_face = quad(p(b.x0, b.y1, b.z0), p(b.x1, b.y1, b.z0), p(b.x1, y0, b.z0), p(b.x0, y0, b.z0));
+    let anchor = p(b.x0, b.y1, b.z0);
 
     // Details on the front face.
     let mut details: Vec<(BezPath, Color, Option<f64>)> = Vec::new();
@@ -345,19 +349,19 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     let seed = paint::seed(&[b.x0, b.y1]);
     canvas.push(depth, move |scene| {
         for (i, (face, color)) in faces.iter().enumerate() {
-            wash(scene, face, *color, None, scale * 2.0, seed ^ i as u64);
-            paint::ink(scene, face, scale * 2.0, seed ^ i as u64);
+            wash(scene, face, *color, None, scale * 2.0, seed ^ i as u64, anchor);
+            paint::ink(scene, face, scale * 2.0, seed ^ i as u64, anchor);
         }
-        wash(scene, &front_face, front, None, scale * 2.0, seed ^ 0xf);
+        wash(scene, &front_face, front, None, scale * 2.0, seed ^ 0xf, anchor);
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &front_face);
         for (i, (path, color, stroke)) in details.iter().enumerate() {
             match stroke {
                 Some(w) => scene.stroke(&Stroke::new(w * scale), Affine::IDENTITY, color.with_alpha(0.6), None, path),
-                None => wash(scene, path, *color, None, scale * 0.3, seed ^ (i as u64 + 20)),
+                None => wash(scene, path, *color, None, scale * 0.3, seed ^ (i as u64 + 20), anchor),
             }
         }
         scene.pop_layer();
-        paint::ink(scene, &front_face, scale * 2.0, seed);
+        paint::ink(scene, &front_face, scale * 2.0, seed, anchor);
     });
 }
 
@@ -386,15 +390,16 @@ fn draw_vine(canvas: &mut Canvas3d, x: f64, y0: f64, y1: f64, time: f64) {
         side = -side;
     }
     let pr = cam.project(DVec3::new(x, (y0 + y1) / 2.0, z));
+    let anchor = cam.point(DVec3::new(x, y0, z));
     canvas.push(pr.depth, move |scene| {
         let w = 0.09 * pr.scale;
-        let stem = paint::wobble(&stem, w * 0.3, 5);
+        let stem = paint::wobble(&stem, w * 0.3, 5, anchor);
         scene.stroke(&Stroke::new(w), Affine::IDENTITY, Color::from_rgb8(0x5e, 0x86, 0x3a).with_alpha(0.85), None, &stem);
         scene.stroke(&Stroke::new(1.2), Affine::IDENTITY, OUTLINE.with_alpha(0.5), None, &stem);
         for (i, leaf) in leaves.iter().enumerate() {
             let path = leaf.to_path(0.1);
-            wash(scene, &path, LEAF, None, leaf.radii().x * 2.0, i as u64);
-            paint::ink(scene, &path, leaf.radii().x * 2.0, i as u64);
+            wash(scene, &path, LEAF, None, leaf.radii().x * 2.0, i as u64, leaf.center());
+            paint::ink(scene, &path, leaf.radii().x * 2.0, i as u64, leaf.center());
         }
     });
 }
@@ -438,15 +443,15 @@ fn draw_trunk(canvas: &mut Canvas3d, x: f64, top: f64) {
         .collect();
     canvas.push(a.depth + 0.01, move |scene| {
         let glaze = paint::tube_glaze(mid, Vec2::new(0.0, 1.0), width, BARK);
-        wash(scene, &body, BARK, Some(&glaze), width * 2.0, 41);
+        wash(scene, &body, BARK, Some(&glaze), width * 2.0, 41, a.pos);
         for g in &grain {
             scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, darken(BARK, 0.3).with_alpha(0.6), None, g);
         }
-        paint::ink(scene, &body, width * 2.0, 41);
+        paint::ink(scene, &body, width * 2.0, 41, a.pos);
         for (i, &(p, r)) in canopy.iter().enumerate() {
             let c = Circle::new(p, r).to_path(0.1);
             let color = if i % 2 == 0 { LEAF } else { lighten(LEAF, 0.1) };
-            wash(scene, &c, color, Some(&paint::ball_glaze(p, r, color)), r * 2.0, 50 + i as u64);
+            wash(scene, &c, color, Some(&paint::ball_glaze(p, r, color)), r * 2.0, 50 + i as u64, p);
         }
     });
 }
@@ -477,11 +482,11 @@ fn draw_hook(canvas: &mut Canvas3d, h: DVec2, time: f64, hint: bool) {
             let c = pr.pos + Vec2::new(a.cos(), a.sin()) * 0.22 * s * pulse;
             let petal = Ellipse::new(c, (0.2 * s * pulse, 0.11 * s * pulse), a);
             let petal = petal.to_path(0.1);
-            wash(scene, &petal, Color::from_rgb8(0xe0, 0x5f, 0x9e), None, 0.4 * s, k as u64);
-            paint::ink(scene, &petal, 0.4 * s, k as u64);
+            wash(scene, &petal, Color::from_rgb8(0xe0, 0x5f, 0x9e), None, 0.4 * s, k as u64, pr.pos);
+            paint::ink(scene, &petal, 0.4 * s, k as u64, pr.pos);
         }
         let bud = Circle::new(pr.pos, 0.12 * s);
-        wash(scene, &bud.to_path(0.1), Color::from_rgb8(0xf6, 0xd0, 0x4a), None, 0.24 * s, 9);
+        wash(scene, &bud.to_path(0.1), Color::from_rgb8(0xf6, 0xd0, 0x4a), None, 0.24 * s, 9, pr.pos);
     });
 }
 
@@ -523,7 +528,8 @@ fn draw_checkpoint(canvas: &mut Canvas3d, at: DVec2, reached: bool, time: f64) {
     for i in 0..=n {
         let f = i as f64 / n as f64;
         let wave = (time * 5.0 - f * 4.0).sin() * 0.08 * f;
-        flag.line_to(cam.point(top + DVec3::new(f * 0.9, -0.05 + wave, 0.0)));
+        let p = cam.point(top + DVec3::new(f * 0.9, -0.05 + wave, 0.0));
+        if i == 0 { flag.move_to(p) } else { flag.line_to(p) }
     }
     for i in (0..=n).rev() {
         let f = i as f64 / n as f64;
@@ -561,8 +567,8 @@ fn draw_goal(canvas: &mut Canvas3d, at: DVec2, time: f64) {
         star.close_path();
         let gold = Gradient::new_linear(pr.pos - Vec2::new(0.0, 0.7 * s), pr.pos + Vec2::new(0.0, 0.7 * s))
             .with_stops([Color::from_rgb8(0xff, 0xf2, 0x9a), Color::from_rgb8(0xe0, 0xa0, 0x20)]);
-        wash(scene, &star, Color::from_rgb8(0xf2, 0xc2, 0x3a), Some(&gold), 1.4 * s, 3);
-        paint::ink(scene, &star, 1.4 * s, 3);
+        wash(scene, &star, Color::from_rgb8(0xf2, 0xc2, 0x3a), Some(&gold), 1.4 * s, 3, pr.pos);
+        paint::ink(scene, &star, 1.4 * s, 3, pr.pos);
     });
 }
 
@@ -594,7 +600,7 @@ fn draw_foreground(canvas: &mut Canvas3d, w: f64, time: f64) {
                 frond.move_to(pr.pos);
                 frond.quad_to(mid + normal, tip);
                 frond.quad_to(mid - normal, pr.pos);
-                wash(scene, &frond, color, None, len * 0.4, (i as u64) << 4 | k as u64);
+                wash(scene, &frond, color, None, len * 0.4, (i as u64) << 4 | k as u64, pr.pos);
             }
         });
     }

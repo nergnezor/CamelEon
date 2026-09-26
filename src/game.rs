@@ -14,12 +14,14 @@ use crate::rig::{Skeleton, Solved};
 
 /// Distance from the camera to the gameplay plane.
 const CAMERA_DISTANCE: f64 = 11.0;
-/// World units visible vertically in the gameplay plane.
+/// World units visible vertically in the gameplay plane: standing still, and
+/// at full running speed (the camera zooms out the faster Joe goes).
 const VIEW_HEIGHT: f64 = 8.5;
+const VIEW_HEIGHT_FAST: f64 = 13.0;
 const MAX_STEP: f64 = 1.0 / 120.0;
 const TONGUE: Color = Color::from_rgb8(0xe8, 0x5f, 0x8a);
 
-/// Which controls are currently held down.
+/// Which controls are currently held down, plus analog stick axes.
 #[derive(Default, Clone, Copy)]
 pub struct Input {
     pub left: bool,
@@ -28,6 +30,37 @@ pub struct Input {
     pub down: bool,
     pub jump: bool,
     pub tongue: bool,
+    /// Analog stick, −1..1 (x right, y up); zero when no stick is used.
+    pub stick_x: f64,
+    pub stick_y: f64,
+}
+
+impl Input {
+    /// Combines two input sources: a button is down if it's down in either,
+    /// and the stick that's pushed further wins.
+    pub fn merge(a: Input, b: Input) -> Input {
+        let pick = |x: f64, y: f64| if x.abs() > y.abs() { x } else { y };
+        Input {
+            left: a.left || b.left,
+            right: a.right || b.right,
+            up: a.up || b.up,
+            down: a.down || b.down,
+            jump: a.jump || b.jump,
+            tongue: a.tongue || b.tongue,
+            stick_x: pick(a.stick_x, b.stick_x),
+            stick_y: pick(a.stick_y, b.stick_y),
+        }
+    }
+
+    /// Horizontal and vertical axes: the stick if it's pushed, else the keys.
+    fn axes(&self) -> (f64, f64) {
+        let keys = |neg: bool, pos: bool| pos as i32 as f64 - neg as i32 as f64;
+        let pick = |stick: f64, key: f64| if stick.abs() > key.abs() { stick } else { key };
+        (
+            pick(self.stick_x, keys(self.left, self.right)),
+            pick(self.stick_y, keys(self.down, self.up)),
+        )
+    }
 }
 
 struct Particle {
@@ -60,6 +93,7 @@ pub struct Game {
     squash_vel: f64,
     camo: f64,
     camera: DVec2,
+    view_height: f64,
     time: f64,
     won_at: Option<f64>,
     flash: f64,
@@ -90,6 +124,7 @@ impl Game {
             squash_vel: 0.0,
             camo: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
+            view_height: VIEW_HEIGHT,
             time: 0.0,
             won_at: None,
             flash: 0.0,
@@ -110,17 +145,20 @@ impl Game {
     fn step(&mut self, dt: f64) {
         self.time += dt;
         let (k, p) = (self.input, self.pad);
+        let (kx, ky) = k.axes();
+        let (px, py) = p.axes();
+        let pick = |a: f64, b: f64| if a.abs() > b.abs() { a } else { b };
+        let (x, y) = (pick(kx, px), pick(ky, py));
         let input = Input {
-            left: k.left || p.left,
-            right: k.right || p.right,
-            up: k.up || p.up,
-            down: k.down || p.down,
+            up: y > 0.3,
+            down: y < -0.3,
             jump: k.jump || p.jump,
             tongue: k.tongue || p.tongue,
+            ..Input::default()
         };
         let mut controls = Controls {
-            left: input.left,
-            right: input.right,
+            x,
+            y,
             up: input.up,
             down: input.down,
             jump: input.jump,
@@ -202,8 +240,13 @@ impl Game {
         let motion = self.motion();
         self.animator.update(dt, &motion);
 
+        // Zoom out with speed (slowly, so it breathes rather than pumps).
+        let speed = (self.player.vel.length() / 17.0).min(1.0);
+        let target_view = VIEW_HEIGHT + (VIEW_HEIGHT_FAST - VIEW_HEIGHT) * speed;
+        self.view_height += (target_view - self.view_height) * (1.0 - (-dt * 1.2).exp());
+
         // Camera follows with a little look-ahead.
-        let target = self.player.pos + DVec2::new(self.turn * 2.0, 1.7);
+        let target = self.player.pos + DVec2::new(self.turn * 2.0 + self.player.vel.x * 0.3, 1.7);
         let ck = DVec2::new(1.0 - (-dt * 3.5).exp(), 1.0 - (-dt * 2.5).exp());
         self.camera += (target - self.camera) * ck;
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
@@ -281,6 +324,7 @@ impl Game {
     }
 
     /// A one-line summary of the player's state, for the snapshot tool.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn status(&self) -> String {
         let p = &self.player;
         let state = match p.state {
@@ -296,9 +340,10 @@ impl Game {
     pub fn draw(&self, scene: &mut Scene, w: f64, h: f64) {
         let camera = Camera {
             eye: DVec3::new(self.camera.x, self.camera.y, -CAMERA_DISTANCE),
-            focal: h / VIEW_HEIGHT * CAMERA_DISTANCE,
+            focal: h / self.view_height * CAMERA_DISTANCE,
             center: Point::new(w / 2.0, h / 2.0),
         };
+        crate::paint::set_zoom(h / self.view_height / 85.0);
         jungle::draw_background(scene, &camera, w, h, self.time);
 
         let mut canvas = Canvas3d::new(camera);
