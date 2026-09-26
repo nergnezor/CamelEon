@@ -352,7 +352,7 @@ impl Game {
             focal: h / self.view_height * CAMERA_DISTANCE,
             center: Point::new(w / 2.0, h / 2.0),
         };
-        crate::paint::set_zoom(h / self.view_height / 85.0);
+        crate::paint::set_view(w, h, h / self.view_height / 85.0);
         jungle::draw_background(scene, &camera, w, h, self.time);
 
         let mut canvas = Canvas3d::new(camera);

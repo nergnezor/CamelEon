@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Hot-patch code while the game runs: `dx serve --hotpatch --features hotpatch`.
+# Hot-patch code while the game runs with `dx serve --hotpatch`. On by default
+# (native only); it does nothing unless the game was started by dx.
+default = ["hotpatch"]
 hotpatch = ["dep:subsecond", "dep:dioxus-devtools"]
 
 [dependencies]
@@ -13,12 +15,12 @@ glam = "0.33.10"
 vello = "0.10.0"
 web-time = "1.1.0"
 winit = "0.30.13"
-subsecond = { version = "0.7.10", optional = true }
-dioxus-devtools = { version = "0.7.10", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 crossterm = "0.29.0"
+dioxus-devtools = { version = "0.7.10", optional = true }
 pollster = "1.0.1"
+subsecond = { version = "0.7.10", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.7"

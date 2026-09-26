@@ -62,8 +62,14 @@ fn rand01(seed: u64, k: u64) -> f64 {
 /// their size on the object when the camera zooms. Set once per frame.
 static ZOOM: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000); // 1.0
 
-pub fn set_zoom(zoom: f64) {
+/// Screen size, so outline segments entirely off screen can be skipped.
+static VIEW_W: AtomicU64 = AtomicU64::new(0x40A0_0000_0000_0000); // 2048.0
+static VIEW_H: AtomicU64 = AtomicU64::new(0x40A0_0000_0000_0000);
+
+pub fn set_view(w: f64, h: f64, zoom: f64) {
     ZOOM.store(zoom.to_bits(), Ordering::Relaxed);
+    VIEW_W.store(w.to_bits(), Ordering::Relaxed);
+    VIEW_H.store(h.to_bits(), Ordering::Relaxed);
 }
 
 fn zoom() -> f64 {
@@ -92,7 +98,7 @@ fn noise2(x: f64, y: f64, seed: u64) -> f64 {
 /// object instead of shimmering when the camera pans or zooms.
 pub fn wobble(path: &BezPath, amp: f64, seed: u64, anchor: Point) -> BezPath {
     let mut polys: Vec<(Vec<Point>, bool)> = Vec::new();
-    flatten(path, 0.4, |el| match el {
+    flatten(path, 0.8, |el| match el {
         PathEl::MoveTo(p) => polys.push((vec![p], false)),
         PathEl::LineTo(p) => {
             if let Some((poly, _)) = polys.last_mut() {
@@ -122,11 +128,21 @@ pub fn wobble(path: &BezPath, amp: f64, seed: u64, anchor: Point) -> BezPath {
         let n = poly.len();
         let segs = if closed { n } else { n - 1 };
         let perimeter: f64 = (0..segs).map(|i| (poly[(i + 1) % n] - poly[i]).hypot()).sum();
-        let step = (perimeter / 3000.0).max(4.0);
+        // The noise's finest detail is ~15 px, so ~6 px steps are plenty.
+        let step = (perimeter / 600.0).max(6.0);
+        let (vw, vh) = (f64::from_bits(VIEW_W.load(Ordering::Relaxed)), f64::from_bits(VIEW_H.load(Ordering::Relaxed)));
+        let margin = 40.0;
+        let off = |a: Point, b: Point| {
+            (a.x < -margin && b.x < -margin)
+                || (a.y < -margin && b.y < -margin)
+                || (a.x > vw + margin && b.x > vw + margin)
+                || (a.y > vh + margin && b.y > vh + margin)
+        };
         let mut pts = Vec::with_capacity((perimeter / step) as usize + n);
         for i in 0..segs {
             let (a, b) = (poly[i], poly[(i + 1) % n]);
-            let parts = ((b - a).hypot() / step).ceil().max(1.0) as usize;
+            // Nobody sees a wobble off screen: keep just the corner.
+            let parts = if off(a, b) { 1 } else { ((b - a).hypot() / step).ceil().max(1.0) as usize };
             for k in 0..parts {
                 pts.push(a.lerp(b, k as f64 / parts as f64));
             }
@@ -175,8 +191,14 @@ pub fn wash_with_edge(
     edge_alpha: f32,
 ) {
     let amp = (size * 0.035).clamp(0.3, 6.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.78), None, &wobble(path, amp, seed, anchor));
-    scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.4), None, &wobble(path, amp * 1.8, seed ^ 0x55, anchor));
+    let main = wobble(path, amp, seed, anchor);
+    if size < 40.0 {
+        // Small shapes: a single layer looks the same and costs half.
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.9), None, &main);
+    } else {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.78), None, &main);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.4), None, &wobble(path, amp * 1.8, seed ^ 0x55, anchor));
+    }
     if let Some(g) = glaze {
         scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &wobble(path, amp * 0.6, seed ^ 0x77, anchor));
     }
@@ -186,7 +208,7 @@ pub fn wash_with_edge(
         Affine::IDENTITY,
         darken(color, 0.3).with_alpha(edge_alpha),
         None,
-        &wobble(path, amp * 0.8, seed ^ 0x33, anchor),
+        &main,
     );
 }
 
@@ -285,12 +307,11 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, id, &rect);
     let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
     scene.fill(Fill::NonZero, id, &paper, None, &rect);
-    scene.fill(Fill::NonZero, id, Color::from_rgb8(0xe6, 0xe0, 0xde), None, &rect);
     let away = Point::new(w * (1.0 - SUN.0) - w * 0.3, h * 1.1);
     let dusk = Gradient::new_linear(sun, away).with_stops([
-        (0.0, Color::WHITE),
-        (0.4, Color::from_rgb8(0xe2, 0xd6, 0xe4)),
-        (1.0, Color::from_rgb8(0x72, 0x62, 0x98)),
+        (0.0, Color::from_rgb8(0xe6, 0xe0, 0xde)),
+        (0.4, Color::from_rgb8(0xcc, 0xbc, 0xc6)),
+        (1.0, Color::from_rgb8(0x68, 0x56, 0x84)),
     ]);
     scene.fill(Fill::NonZero, id, &dusk, None, &rect);
     let vignette = Gradient::new_radial(Point::new(w / 2.0, h / 2.0), (w.max(h) * 0.75) as f32).with_stops([
@@ -315,12 +336,14 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
 /// shadow shape on the side away from the light, a small highlight and a bold
 /// ink outline, in the style of 1930s animation.
 pub fn cel(scene: &mut Scene, path: &BezPath, color: Color, shadow: Option<&Gradient>, size: f64, seed: u64, anchor: Point) {
-    let body = wobble(path, (size * 0.01).clamp(0.2, 1.2), seed, anchor);
+    let body = wobble(path, (size * 0.012).clamp(0.3, 1.5), seed, anchor);
     scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &body);
     if let Some(g) = shadow {
         scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &body);
     }
-    ink(scene, path, size, seed, anchor);
+    let width = (size * 0.055).clamp(1.2, 4.0);
+    let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
+    scene.stroke(&stroke, Affine::IDENTITY, INK, None, &body);
 }
 
 /// Crisp cel shadow for round things: a hard-edged crescent away from the light.

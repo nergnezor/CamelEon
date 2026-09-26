@@ -7,6 +7,7 @@ mod level;
 mod paint;
 mod player;
 mod rig;
+mod stats;
 #[cfg(not(target_arch = "wasm32"))]
 mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,6 +26,8 @@ Usage: cameljon [MODE]
   --snapshot OUT.ppm [SCRIPT]
                 Developer tool: run with scripted input (e.g. -:1 R:1.2 RJ:0.3)
                 and save the last frame
+
+Keys V and F toggle vsync and the FPS overlay (window mode).
 
 Controls:
   ← → / A D     run

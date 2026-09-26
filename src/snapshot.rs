@@ -58,7 +58,14 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     )?;
     let target = Target::new(device, WIDTH, HEIGHT);
     let mut scene = Scene::new();
-    game.draw(&mut scene, WIDTH as f64, HEIGHT as f64);
+    // Time building the scene (the CPU side of a frame), averaged.
+    let runs = 20;
+    let start = web_time::Instant::now();
+    for _ in 0..runs {
+        scene.reset();
+        game.draw(&mut scene, WIDTH as f64, HEIGHT as f64);
+    }
+    eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
     renderer.render_to_texture(
         device,
         queue,

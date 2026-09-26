@@ -17,6 +17,7 @@ use winit::window::{Window, WindowId};
 
 use crate::game::{Game, Input};
 use crate::gamepad::Gamepads;
+use crate::stats::FrameStats;
 use crate::touch::TouchControls;
 
 struct RenderState {
@@ -39,9 +40,9 @@ struct App {
     game: Game,
     gamepads: Gamepads,
     touch: TouchControls,
+    stats: FrameStats,
+    vsync: bool,
     last_frame: Instant,
-    fps_timer: Instant,
-    frames: u32,
 }
 
 async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(RenderContext, RenderState), String> {
@@ -127,6 +128,18 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::Space | KeyCode::KeyZ) => input.jump = pressed,
                     PhysicalKey::Code(KeyCode::KeyX | KeyCode::KeyJ) => input.tongue = pressed,
                     PhysicalKey::Code(KeyCode::Escape) if !cfg!(target_arch = "wasm32") => event_loop.exit(),
+                    PhysicalKey::Code(KeyCode::KeyF) if pressed && !event.repeat => {
+                        self.stats.visible = !self.stats.visible;
+                    }
+                    PhysicalKey::Code(KeyCode::KeyV) if pressed && !event.repeat => {
+                        self.vsync = !self.vsync;
+                        let mode = if self.vsync {
+                            wgpu::PresentMode::AutoVsync
+                        } else {
+                            wgpu::PresentMode::AutoNoVsync
+                        };
+                        context.set_present_mode(&mut state.surface, mode);
+                    }
                     _ => {}
                 }
             }
@@ -142,6 +155,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested => {
                 let width = state.surface.config.width;
                 let height = state.surface.config.height;
+                let work_start = Instant::now();
                 self.game.pad = Input::merge(self.gamepads.poll(), self.touch.input());
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame).as_secs_f64();
@@ -154,6 +168,7 @@ impl ApplicationHandler<UserEvent> for App {
                 scene.reset();
                 hot(|| game.draw(scene, width as f64, height as f64));
                 self.touch.draw(scene);
+                self.stats.draw(scene, width as f64, height as f64, self.vsync);
 
                 let handle = &context.devices[state.surface.dev_id];
                 state
@@ -193,16 +208,15 @@ impl ApplicationHandler<UserEvent> for App {
                     .blitter
                     .copy(&handle.device, &mut encoder, &state.surface.target_view, &view);
                 handle.queue.submit([encoder.finish()]);
+                let work = work_start.elapsed().as_secs_f64();
                 state.window.pre_present_notify();
                 frame.present();
 
-                self.frames += 1;
-                let elapsed = self.fps_timer.elapsed().as_secs_f64();
-                if elapsed >= 1.0 {
-                    let fps = self.frames as f64 / elapsed;
-                    state.window.set_title(&format!("CamelJon — {fps:.0} FPS"));
-                    self.frames = 0;
-                    self.fps_timer = Instant::now();
+                if let Some(fps) = self.stats.frame(work) {
+                    state.window.set_title(&format!(
+                        "CamelJon — {fps:.0} FPS (max {:.0})",
+                        self.stats.possible_fps()
+                    ));
                 }
                 state.window.request_redraw();
             }
@@ -213,11 +227,11 @@ impl ApplicationHandler<UserEvent> for App {
 
 /// Runs `f`, through the hot-patching engine when that's enabled.
 fn hot<R>(f: impl FnMut() -> R) -> R {
-    #[cfg(feature = "hotpatch")]
+    #[cfg(all(feature = "hotpatch", not(target_arch = "wasm32")))]
     {
         subsecond::call(f)
     }
-    #[cfg(not(feature = "hotpatch"))]
+    #[cfg(not(all(feature = "hotpatch", not(target_arch = "wasm32"))))]
     {
         let mut f = f;
         f()
@@ -229,8 +243,13 @@ fn show_error(err: &str) {
     #[cfg(target_arch = "wasm32")]
     if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
         body.set_inner_html(&format!(
-            "<p style=\"font:18px sans-serif;padding:2em;color:#3b2a1e\">CamelJon needs a browser with \
-             WebGPU (recent Chrome, Edge or Safari).<br><small>{err}</small></p>"
+            "<div style=\"font:18px sans-serif;padding:2em;color:#3b2a1e;max-width:40em\">\
+             <p>Camel Joe needs WebGPU, which this browser doesn't have turned on.</p>\
+             <p>It works out of the box in Chrome, Edge and Safari on Windows, macOS, Android and iOS.</p>\
+             <p>On Linux, Chromium-based browsers (Chrome, Vivaldi, Brave, Edge) need two flags: \
+             open <code>chrome://flags</code> (or <code>vivaldi://flags</code>), enable \
+             <b>Unsafe WebGPU Support</b> and <b>Vulkan</b>, then restart the browser.</p>\
+             <p><small>{err}</small></p></div>"
         ));
     }
 }
@@ -247,9 +266,9 @@ pub fn run() {
         game: Game::new(),
         gamepads: Gamepads::new(),
         touch: TouchControls::default(),
+        stats: FrameStats::default(),
+        vsync: true,
         last_frame: Instant::now(),
-        fps_timer: Instant::now(),
-        frames: 0,
     };
     #[cfg(target_arch = "wasm32")]
     {

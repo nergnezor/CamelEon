@@ -20,6 +20,7 @@ use vello::{AaConfig, Renderer, RendererOptions, Scene};
 
 use crate::game::Game;
 use crate::gamepad::Gamepads;
+use crate::stats::FrameStats;
 
 /// The image id used with kitty. Reusing it every frame replaces the previous image.
 const IMAGE_ID: u32 = 1;
@@ -89,8 +90,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending: Option<(PathBuf, Instant)> = None;
     let mut frame_number: u64 = 0;
     let mut last_frame = Instant::now();
-    let mut fps_timer = Instant::now();
-    let mut fps_frames = 0;
+    let mut stats = FrameStats::default();
 
     loop {
         let frame_start = Instant::now();
@@ -142,12 +142,14 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
             _ => target.insert(Target::new(device, width, height)),
         };
 
+        let work_start = Instant::now();
         game.pad = gamepads.poll();
         let now = Instant::now();
         game.update(now.duration_since(last_frame).as_secs_f64());
         last_frame = now;
         scene.reset();
         game.draw(&mut scene, width as f64, height as f64);
+        stats.draw(&mut scene, width as f64, height as f64, true);
 
         renderer.render_to_texture(
             device,
@@ -180,13 +182,9 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         out.flush()?;
         frame_number += 1;
 
-        fps_frames += 1;
-        let elapsed = fps_timer.elapsed().as_secs_f64();
-        if elapsed >= 1.0 {
-            let fps = fps_frames as f64 / elapsed;
-            execute!(out, terminal::SetTitle(format!("CamelJon — {fps:.0} FPS")))?;
-            fps_frames = 0;
-            fps_timer = Instant::now();
+        if let Some(fps) = stats.frame(work_start.elapsed().as_secs_f64()) {
+            let max = stats.possible_fps();
+            execute!(out, terminal::SetTitle(format!("CamelJon — {fps:.0} FPS (max {max:.0})")))?;
         }
 
         if let Some(rest) = FRAME_TIME.checked_sub(frame_start.elapsed()) {

@@ -71,7 +71,7 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
     ]);
     scene.fill(Fill::NonZero, Affine::IDENTITY, &glow, None, &Rect::new(0.0, 0.0, w, h));
     // Watercolour blooms: soft blotches where the wash dried unevenly.
-    for k in 0..7 {
+    for k in 0..4 {
         let fx = hash(k, 90);
         let fy = hash(k, 91);
         let drift = (cam.eye.x * 0.01 + fx * 10.0) % 1.4 - 0.2;
