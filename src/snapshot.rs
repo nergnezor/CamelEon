@@ -3,6 +3,7 @@
 //!
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
+//! A step `@N` starts from checkpoint N instead.
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::peniko::Color;
@@ -25,6 +26,10 @@ pub fn run(out: &str, script: &str) {
 fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut game = Game::new();
     for step in script.split_whitespace() {
+        if let Some(n) = step.strip_prefix('@') {
+            game.warp(n.parse()?);
+            continue;
+        }
         let (keys, secs) = step.split_once(':').ok_or("script steps look like KEYS:seconds")?;
         let secs: f64 = secs.parse()?;
         game.input.left = keys.contains('L');

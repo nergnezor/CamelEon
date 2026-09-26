@@ -323,6 +323,15 @@ impl Game {
         })
     }
 
+    /// Moves Joe to a checkpoint, for the snapshot tool.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn warp(&mut self, checkpoint: usize) {
+        self.checkpoint = checkpoint.min(self.level.checkpoints.len() - 1);
+        let at = self.level.checkpoints[self.checkpoint];
+        self.player.respawn(at);
+        self.camera = at + DVec2::new(2.0, 1.7);
+    }
+
     /// A one-line summary of the player's state, for the snapshot tool.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn status(&self) -> String {

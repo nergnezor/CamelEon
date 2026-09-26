@@ -103,15 +103,36 @@ pub fn jungle() -> Level {
             Block { x0: 70.0, x1: 80.0, y0: BOTTOM, y1: 6.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
             // Big drop with two swing flowers and a resting log.
             log(89.5, 92.5, 5.0),
-            ground(93.0, 126.0, 0.0),
-            stone(100.0, 103.0, 0.0, 1.5),
+            // The long run: open ground to build up speed (momentum grows
+            // while running flat out), with logs to hop over from below.
+            ground(93.0, 160.0, 0.0),
             log(106.0, 110.0, 3.2),
+            log(128.0, 133.0, 2.4),
+            log(145.0, 150.0, 2.4),
+            // Speed gap (160–171): too wide at base speed, easy at full tilt.
+            ground(171.0, 226.0, 0.0),
+            stone(190.0, 191.5, 0.0, 0.8),
+            stone(208.0, 209.5, 0.0, 0.8),
+            // Launch ledge, then the big leap (240–253.5).
+            ground(226.0, 240.0, 1.5),
+            // Final sprint to the goal.
+            ground(253.5, 330.0, 0.0),
             // The goal's pedestal.
-            Block { x0: 117.4, x1: 118.6, y0: 0.0, y1: 1.0, z0: 0.1, z1: 1.2, kind: BlockKind::Stone },
-            Block { x0: 126.0, x1: 134.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
+            Block { x0: 319.4, x1: 320.6, y0: 0.0, y1: 1.0, z0: 0.1, z1: 1.2, kind: BlockKind::Stone },
+            Block { x0: 330.0, x1: 338.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
         ],
         climbables: vec![vine(33.0, 0.0, 7.5), trunk(41.0, 9.6), vine(69.35, 0.0, 6.5)],
-        hooks: vec![p(24.5, 5.5), p(48.5, 6.0), p(53.0, 6.5), p(84.0, 11.0), p(88.5, 11.5)],
+        hooks: vec![
+            p(24.5, 5.5),
+            p(48.5, 6.0),
+            p(53.0, 6.5),
+            p(84.0, 11.0),
+            p(88.5, 11.5),
+            // Fallbacks for the speed sections.
+            p(166.0, 7.0),
+            p(245.5, 8.5),
+            p(250.5, 8.5),
+        ],
         flies: vec![
             p(4.0, 1.8),
             p(9.5, 2.7),
@@ -126,11 +147,33 @@ pub fn jungle() -> Level {
             p(75.0, 7.5),
             p(86.2, 8.0),
             p(91.0, 6.5),
-            p(101.5, 3.0),
+            p(101.5, 1.9),
             p(108.0, 4.6),
+            // Snacks to snap up with the tongue at full speed.
+            p(118.0, 1.9),
+            p(136.0, 2.0),
+            p(152.0, 1.9),
+            p(166.0, 3.5),
+            p(184.0, 2.0),
+            p(199.0, 2.8),
+            p(215.0, 2.0),
+            p(233.0, 3.0),
+            p(247.5, 5.0),
+            p(265.0, 2.0),
+            p(282.0, 2.2),
+            p(300.0, 1.9),
         ],
-        checkpoints: vec![p(1.0, 0.0), p(29.0, 0.0), p(57.0, 0.0), p(74.0, 6.0), p(96.0, 0.0)],
-        goal: p(118.0, 0.0),
+        checkpoints: vec![
+            p(1.0, 0.0),
+            p(29.0, 0.0),
+            p(57.0, 0.0),
+            p(74.0, 6.0),
+            p(96.0, 0.0),
+            p(130.0, 0.0),
+            p(175.0, 0.0),
+            p(258.0, 0.0),
+        ],
+        goal: p(320.0, 0.0),
         kill_y: -7.0,
     }
 }
