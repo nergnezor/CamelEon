@@ -57,7 +57,8 @@ saves the last frame (convert with e.g. `magick out.ppm out.png`).
 - `@N` warps to checkpoint N first, e.g. `@4 R:0.7` (open ground, high speed).
 - Environment: `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`,
   `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
-  `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped).
+  `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped),
+  `CAMEL_EON_WAV=out.wav` (renders the script's sound and prints its peak/RMS).
 - It prints the scene build time and a status line per step (position,
   velocity, state), which is handy for checking movement numerically.
 - It renders a frame of a fresh game before the real one, so stale GPU caches
@@ -82,6 +83,7 @@ running.
 | `weather.rs` | Rain, wind gusts, fog, pit mist, leaves, fireflies, birds |
 | `paint.rs` | Drawing helpers and detail levels |
 | `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |
+| `audio.rs` | Procedural sound: `Sfx` events and `Ambience` from the game, a small synth, cpal output |
 | `hair.rs` | Shader hair: strands → wgpu pass → texture drawn by Vello as an image |
 | `window.rs` | winit window (desktop and web), input, adaptive resolution |
 | `terminal.rs` | kitty graphics protocol frontend |
@@ -111,5 +113,9 @@ running.
 - Konrad is drawn as one group in a **fixed part order**, not depth-sorted per
   part: per-part sorting made parts flicker in front of each other.
 - kurbo panics in debug builds on `line_to` without a preceding `move_to`.
+- Sound runs in cpal's callback, outside `hot()`: hot reload doesn't patch
+  the synth. The game only queues `Game::sounds` and reports `ambience()`;
+  the frontend passes them on with `Audio::feed`. On the web the audio
+  device opens on the first key press or touch (browser autoplay rules).
 - Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
   single-threaded, and there's no hot reload.

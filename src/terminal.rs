@@ -74,6 +74,11 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = TerminalGuard::enter()?;
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut game = Game::new();
+    // Over SSH (`--direct`) the sound would play on the wrong machine.
+    let mut audio = crate::audio::Audio::new();
+    if !matches!(transfer, Transfer::Direct) {
+        audio.start();
+    }
     let mut gamepads = Gamepads::new();
     // The last shared-memory frame sent, until the terminal has read it.
     let mut pending: Option<(PathBuf, Instant)> = None;
@@ -94,6 +99,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Down | KeyCode::Char('s') => game.input.down = pressed,
                 KeyCode::Char(' ') | KeyCode::Char('z') => game.input.jump = pressed,
                 KeyCode::Char('x') | KeyCode::Char('j') => game.input.tongue = pressed,
+                KeyCode::Char('m') if key.kind == KeyEventKind::Press => audio.toggle_mute(),
                 KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(());
@@ -131,6 +137,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         game.pad = gamepads.poll();
         let now = Instant::now();
         game.update(now.duration_since(last_frame).as_secs_f64());
+        audio.feed(game.ambience(), &mut game.sounds);
         last_frame = now;
         renderer.render(device, queue, width, height, |layers, hair| {
             let info = game.draw(layers, width as f64, height as f64, hair);

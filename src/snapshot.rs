@@ -5,11 +5,13 @@
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
 //! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
-//! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`.
+//! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
+//! `CAMEL_EON_WAV=out.wav` (also records the sound of the whole script).
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::util::RenderContext;
 
+use crate::audio::Synth;
 use crate::frame::{FrameRenderer, Layers};
 use crate::game::Game;
 use crate::hair::{HairMode, HairStyle};
@@ -39,6 +41,10 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         Ok("clear") => game.weather.mode = crate::weather::Mode::Clear,
         _ => {}
     }
+    // Sound: `CAMEL_EON_WAV=out.wav` renders what the script would sound like.
+    let wav = std::env::var("CAMEL_EON_WAV").ok();
+    let mut synth = Synth::new(AUDIO_RATE as f32);
+    let mut samples: Vec<(f32, f32)> = Vec::new();
     for step in script.split_whitespace() {
         if let Some(n) = step.strip_prefix('@') {
             game.warp(n.parse()?);
@@ -55,8 +61,19 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         let frames = (secs * 60.0).round() as usize;
         for _ in 0..frames {
             game.update(1.0 / 60.0);
+            if wav.is_some() {
+                for sfx in game.sounds.drain(..) {
+                    synth.play(sfx);
+                }
+                synth.ambience = game.ambience();
+                samples.extend((0..AUDIO_RATE / 60).map(|_| synth.next()));
+            }
         }
         eprintln!("{step:>8} -> {}", game.status());
+    }
+
+    if let Some(path) = &wav {
+        write_wav(path, &samples)?;
     }
 
     let mut context = RenderContext::new();
@@ -100,6 +117,36 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     ppm.extend(rgba.chunks(4).flat_map(|p| [p[0], p[1], p[2]]));
     std::fs::write(out, ppm)?;
+    Ok(())
+}
+
+const AUDIO_RATE: u32 = 48_000;
+
+/// Saves stereo samples as a 16-bit WAV file and prints their levels.
+fn write_wav(path: &str, samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>> {
+    let peak = samples.iter().map(|&(l, r)| l.abs().max(r.abs())).fold(0.0, f32::max);
+    let rms = (samples.iter().map(|&(l, r)| (l * l + r * r) as f64 / 2.0).sum::<f64>() / samples.len().max(1) as f64).sqrt();
+    eprintln!("sound: {:.1} s, peak {peak:.2}, rms {rms:.3}", samples.len() as f64 / AUDIO_RATE as f64);
+    let bytes = samples.len() as u32 * 4;
+    let mut out = Vec::with_capacity(44 + bytes as usize);
+    out.extend(b"RIFF");
+    out.extend((36 + bytes).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes()); // PCM
+    out.extend(2u16.to_le_bytes()); // stereo
+    out.extend(AUDIO_RATE.to_le_bytes());
+    out.extend((AUDIO_RATE * 4).to_le_bytes());
+    out.extend(4u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend(bytes.to_le_bytes());
+    for &(l, r) in samples {
+        for v in [l, r] {
+            out.extend(((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+    }
+    std::fs::write(path, out)?;
     Ok(())
 }
 

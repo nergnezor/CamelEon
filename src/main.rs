@@ -1,3 +1,4 @@
+mod audio;
 mod konrad;
 mod canvas3d;
 mod frame;
@@ -31,7 +32,8 @@ Usage: camel-eon [MODE]
                 and save the last frame
 
 Window mode: V and F toggle vsync and the FPS overlay, H cycles the hair
-(shader, both, vector), C cycles the weather (showers, clear, rain).
+(shader, both, vector), C cycles the weather (showers, clear, rain),
+M mutes the sound.
 
 Controls:
   ← → / A D     run

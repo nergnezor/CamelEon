@@ -5,6 +5,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
 
+use crate::audio::{Ambience, Sfx};
 use crate::konrad::{self as hero, Animator, Look, Motion};
 use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
@@ -127,6 +128,10 @@ pub struct Game {
     won_at: Option<f64>,
     flash: f64,
     particles: Vec<Particle>,
+    /// Sound effects since the frontend last collected them.
+    pub sounds: Vec<Sfx>,
+    /// Footfall counter, from the stride: a step sounds when it changes.
+    footfall: i64,
 }
 
 impl Game {
@@ -166,6 +171,8 @@ impl Game {
             won_at: None,
             flash: 0.0,
             particles: Vec::new(),
+            sounds: Vec::new(),
+            footfall: 0,
         }
     }
 
@@ -224,13 +231,20 @@ impl Game {
             };
         }
 
+        let had_tongue = self.player.tongue.is_some();
+        let was_swinging = matches!(self.player.state, State::Swinging { .. });
         let events = self.player.update(dt, &controls, &self.level, &self.flies, &self.caught);
+        self.step_sounds(had_tongue, was_swinging);
         if let Some(i) = events.caught_fly {
+            self.sounds.push(Sfx::Gulp);
             self.caught[i] = true;
             let p = self.flies[i];
             self.burst(DVec3::new(p.x, p.y, 0.0), Color::from_rgb8(0xff, 0xe0, 0x60), 14);
         }
         if let Some(speed) = events.landed {
+            if speed > 2.0 {
+                self.sounds.push(Sfx::Land { speed: speed as f32 });
+            }
             if speed > 5.0 {
                 self.squash_vel -= speed * 0.25;
                 let feet = DVec3::new(self.player.pos.x, self.player.pos.y, 0.0);
@@ -239,23 +253,28 @@ impl Game {
         }
         if events.jumped {
             self.squash_vel += 4.0;
+            let power = ((self.player.vel.y - 11.0) / 7.0).clamp(0.0, 1.0);
+            self.sounds.push(Sfx::Jump { power: power as f32 });
         }
         if events.died {
             let at = self.level.checkpoints[self.checkpoint];
             self.player.respawn(at);
             self.flash = 1.0;
+            self.sounds.push(Sfx::Fall);
         }
         let reached = (self.checkpoint + 1..self.level.checkpoints.len()).rev().find(|&i| {
             self.player.on_ground && self.player.pos.x >= self.level.checkpoints[i].x - 0.5
         });
         if let Some(i) = reached {
             self.checkpoint = i;
+            self.sounds.push(Sfx::Checkpoint);
             let cp = self.level.checkpoints[i];
             self.burst(DVec3::new(cp.x, cp.y + 2.0, 0.7), Color::from_rgb8(0xf2, 0x7a, 0x2e), 12);
         }
         let center = self.player.pos + DVec2::new(0.0, 0.8);
         if self.won_at.is_none() && center.distance(self.level.goal + DVec2::new(0.0, 2.2)) < 2.0 {
             self.won_at = Some(self.time);
+            self.sounds.push(Sfx::Win);
             let g = self.level.goal;
             self.burst(DVec3::new(g.x, g.y + 2.2, 0.3), Color::from_rgb8(0xff, 0xd0, 0x40), 60);
         }
@@ -302,6 +321,43 @@ impl Game {
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
 
         self.update_effects(dt);
+    }
+
+    /// Sounds that follow from his movement: footfalls, climbing, and the
+    /// grappling line going out and catching.
+    fn step_sounds(&mut self, had_tongue: bool, was_swinging: bool) {
+        let p = &self.player;
+        if p.tongue.is_some() && !had_tongue {
+            self.sounds.push(Sfx::Tongue);
+        }
+        if matches!(p.state, State::Swinging { .. }) && !was_swinging {
+            self.sounds.push(Sfx::Grab);
+        }
+        // A foot lands twice per run cycle, just after each leg's forward
+        // swing (see `konrad::run`).
+        let footfall = ((p.stride - 2.0) / std::f64::consts::PI).floor() as i64;
+        if footfall != self.footfall {
+            self.footfall = footfall;
+            match p.state {
+                State::Normal if p.on_ground && p.vel.x.abs() > 1.0 => {
+                    self.sounds.push(Sfx::Step { speed: (p.vel.x.abs() / 30.0).min(1.0) as f32 });
+                }
+                State::Climbing(_) if p.vel.y.abs() > 0.5 => self.sounds.push(Sfx::Climb),
+                _ => {}
+            }
+        }
+    }
+
+    /// The surroundings, for the ambient sound.
+    pub fn ambience(&self) -> Ambience {
+        let p = &self.player;
+        // Air rushes past when he runs flat out, flies or swings fast.
+        let speed = if p.on_ground { p.vel.x.abs() - 16.0 } else { p.vel.length() - 9.0 };
+        Ambience {
+            rain: self.weather.rain as f32,
+            wind: self.weather.wind as f32,
+            rush: (speed / 24.0).clamp(0.0, 1.0) as f32,
+        }
     }
 
     /// Hair has inertia: when his head speeds up, stops, bobs, lands or

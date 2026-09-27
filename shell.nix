@@ -1,5 +1,5 @@
 # NixOS dev shell: libraries that winit and wgpu load at runtime, plus udev
-# (linked by gilrs for gamepads).
+# (linked by gilrs for gamepads) and ALSA (sound, via cpal).
 { pkgs ? import <nixpkgs> { } }:
 let
   runtimeLibs = with pkgs; [
@@ -12,6 +12,7 @@ let
     libxi
     libxrandr
     udev
+    alsa-lib
   ];
 in
 pkgs.mkShell {

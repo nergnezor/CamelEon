@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::audio::Audio;
 use crate::game::{Game, Input};
 use crate::frame::FrameRenderer;
 use crate::gamepad::Gamepads;
@@ -142,6 +143,7 @@ struct App {
     state: Option<RenderState>,
     proxy: EventLoopProxy<UserEvent>,
     game: Game,
+    audio: Audio,
     gamepads: Gamepads,
     touch: TouchControls,
     stats: FrameStats,
@@ -219,6 +221,10 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let (Some(state), Some(context)) = (&mut self.state, &self.context) else { return };
+        // Browsers only allow sound after a key press, click or touch.
+        if let WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Touch(_) = event {
+            self.audio.start();
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -238,6 +244,7 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::KeyC) if pressed && !event.repeat => {
                         self.game.weather.cycle_mode();
                     }
+                    PhysicalKey::Code(KeyCode::KeyM) if pressed && !event.repeat => self.audio.toggle_mute(),
                     PhysicalKey::Code(KeyCode::KeyF) if pressed && !event.repeat => {
                         self.stats.visible = !self.stats.visible;
                     }
@@ -278,6 +285,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // these calls while the game runs.
                 let game = &mut self.game;
                 hot(|| game.update(dt));
+                self.audio.feed(game.ambience(), &mut game.sounds);
                 let (touch, stats, vsync) = (&self.touch, &self.stats, self.vsync);
                 let handle = &context.devices[state.surface.dev_id];
                 let rendered = state.frame.render(&handle.device, &handle.queue, width, height, |layers, hair| {
@@ -376,6 +384,7 @@ pub fn run() {
         state: None,
         proxy: event_loop.create_proxy(),
         game: Game::new(),
+        audio: Audio::new(),
         gamepads: Gamepads::new(),
         touch: TouchControls::default(),
         stats: FrameStats::default(),
@@ -391,6 +400,7 @@ pub fn run() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = app;
+        app.audio.start();
         event_loop.run_app(&mut app).expect("event loop failed");
     }
 }
