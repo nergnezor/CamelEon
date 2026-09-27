@@ -1,8 +1,8 @@
 //! Konrad: the hero, an agent in the style of early-90s cinematic platformers
 //! (think Flashback): realistic proportions, smooth lifelike movement, and flat
-//! colour shading without outlines. Brown hair, an off-white long-sleeved
-//! shirt, grey-blue jeans, boots and a belt with a holster. He fires a
-//! grappling line from his right hand.
+//! colour shading without outlines. Brown hair, a purple velour tracksuit
+//! with white side stripes, and white sneakers. He fires a grappling line
+//! from his right hand.
 //!
 //! Konrad is a 3D rig (see `rig`) drawn as a few smooth 2D body shapes over
 //! the projected skeleton, in a fixed back-to-front order.
@@ -41,16 +41,21 @@ pub mod bone {
 }
 use bone::*;
 
-const SHIRT: Color = Color::from_rgb8(0xd6, 0xd2, 0xc6);
-const JEANS: Color = Color::from_rgb8(0x4b, 0x58, 0x74);
-const BOOT: Color = Color::from_rgb8(0x4a, 0x32, 0x22);
-const BELT: Color = Color::from_rgb8(0x2e, 0x20, 0x18);
+/// Purple velour tracksuit: the fabric, its ribbed cuffs and collar, the
+/// soft sheen along the edges, and the white side stripes.
+const VELOUR: Color = Color::from_rgb8(0x6b, 0x3d, 0x8f);
+const RIB: Color = Color::from_rgb8(0x4e, 0x2a, 0x6a);
+const SHEEN: Color = Color::from_rgb8(0xa8, 0x7c, 0xd0);
+const STRIPE: Color = Color::from_rgb8(0xee, 0xe8, 0xf4);
+const ZIP: Color = Color::from_rgb8(0xc8, 0xcc, 0xd4);
+const SNEAKER: Color = Color::from_rgb8(0xee, 0xea, 0xe4);
+const SOLE: Color = Color::from_rgb8(0x9a, 0x9a, 0xa2);
 const SKIN: Color = Color::from_rgb8(0xd4, 0x9c, 0x7a);
 const HAIR: Color = Color::from_rgb8(0x4a, 0x2c, 0x1a);
 const FEATURE: Color = Color::from_rgb8(0x2a, 0x1c, 0x18);
 
 /// Height of the soles below the ankle bone.
-const SOLE: f64 = 0.035;
+const SOLE_HEIGHT: f64 = 0.035;
 
 pub fn skeleton() -> Skeleton {
     let b = |parent: usize, x: f64, y: f64, z: f64| Bone {
@@ -62,12 +67,12 @@ pub fn skeleton() -> Skeleton {
         b(ROOT, 0.0, 0.95, 0.0),                    // PELVIS
         b(PELVIS, 0.0, 0.18, 0.0),                  // SPINE
         b(SPINE, 0.0, 0.2, 0.0),                    // CHEST
-        b(CHEST, 0.0, 0.2, 0.01),                   // NECK
-        b(NECK, 0.0, 0.14, 0.02),                   // HEAD
-        b(CHEST, -0.19, 0.14, 0.0),                 // SHOULDER_L
+        b(CHEST, 0.0, 0.15, 0.01),                  // NECK
+        b(NECK, 0.0, 0.13, 0.02),                   // HEAD
+        b(CHEST, -0.19, 0.1, 0.0),                  // SHOULDER_L
         b(SHOULDER_L, 0.0, -0.29, 0.0),             // ELBOW_L
         b(ELBOW_L, 0.0, -0.27, 0.0),                // HAND_L
-        b(CHEST, 0.19, 0.14, 0.0),                  // SHOULDER_R
+        b(CHEST, 0.19, 0.1, 0.0),                   // SHOULDER_R
         b(SHOULDER_R, 0.0, -0.29, 0.0),             // ELBOW_R
         b(ELBOW_R, 0.0, -0.27, 0.0),                // HAND_R
         b(PELVIS, -0.095, -0.04, 0.0),              // HIP_L
@@ -289,7 +294,7 @@ pub fn plant(skeleton: &Skeleton, pose: &Pose, root: Root, grounded: bool) -> So
     if !grounded {
         return solved;
     }
-    let lowest = solved.pos[FOOT_L].y.min(solved.pos[FOOT_R].y) - SOLE * root.scale.y;
+    let lowest = solved.pos[FOOT_L].y.min(solved.pos[FOOT_R].y) - SOLE_HEIGHT * root.scale.y;
     let mut root = root;
     root.pos.y -= lowest - root.pos.y;
     Solved::solve(skeleton, pose, root)
@@ -450,18 +455,19 @@ const HIPS_SHAPE: [(f64, f64); 7] = [
     (-0.1, -0.055),
     (-0.115, 0.01),
 ];
-/// Boot, around the ankle: x forward, y up.
-const BOOT_SHAPE: [(f64, f64); 9] = [
-    (-0.055, -0.035),
-    (0.1, -0.035),
-    (0.14, -0.02),
-    (0.13, 0.015),
-    (0.06, 0.035),
-    (0.035, 0.1),
-    (-0.045, 0.1),
-    (-0.06, 0.03),
-    (-0.065, -0.01),
+/// Sneaker, around the ankle: x forward, y up.
+const SNEAKER_SHAPE: [(f64, f64); 8] = [
+    (-0.06, -0.035),
+    (0.11, -0.035),
+    (0.15, -0.02),
+    (0.14, 0.01),
+    (0.07, 0.03),
+    (0.03, 0.07),
+    (-0.045, 0.07),
+    (-0.065, 0.0),
 ];
+/// The sneaker's sole strip.
+const SOLE_SHAPE: [(f64, f64); 4] = [(-0.062, -0.035), (0.12, -0.035), (0.15, -0.018), (-0.064, -0.018)];
 /// Hand, from the wrist along the forearm: x along the hand, y across.
 const HAND_SHAPE: [(f64, f64); 7] = [
     (0.0, -0.028),
@@ -473,6 +479,27 @@ const HAND_SHAPE: [(f64, f64); 7] = [
     (0.0, 0.026),
 ];
 
+/// One thing to paint, in order.
+enum Part {
+    Fill(BezPath, Color),
+    /// Velour: the fabric colour with a soft lighter sheen along its edges.
+    Velour(BezPath, Color),
+    Line(BezPath, Color, f64),
+}
+
+/// An open smooth curve through `points` (Catmull-Rom).
+fn smooth_open(points: &[Point]) -> BezPath {
+    let n = points.len();
+    let at = |i: isize| points[i.clamp(0, n as isize - 1) as usize];
+    let mut path = BezPath::new();
+    path.move_to(points[0]);
+    for i in 0..n as isize - 1 {
+        let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        path.curve_to(p1 + (p2 - p0) / 6.0, p2 - (p3 - p1) / 6.0, p2);
+    }
+    path
+}
+
 pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
     let cam = canvas.camera;
     let pt = |p: DVec3| cam.point(p);
@@ -483,33 +510,44 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
     let right_near = (s.root.rot * DVec3::X).z < 0.0;
     let forward_x = cam.project_dir(s.pos[HEAD], s.root.rot * DVec3::Z).x;
     let facing = if forward_x >= 0.0 { 1.0 } else { -1.0 };
+    // Double side stripes: a white line with a thin line of fabric down its middle.
+    let stripes = |line: BezPath, fabric: Color, white: Color| {
+        vec![Part::Line(line.clone(), white, 0.024 * px), Part::Line(line, fabric, 0.008 * px)]
+    };
 
-    let leg = |hip: usize, knee: usize, foot: usize, color: Color| -> Vec<(BezPath, Color)> {
+    let leg = |hip: usize, knee: usize, foot: usize, shade: fn(Color) -> Color| -> Vec<Part> {
         let (h, kn, a) = (s.pos[hip], s.pos[knee], s.pos[foot]);
         let thigh = h.lerp(kn, 0.45);
         let calf = kn.lerp(a, 0.35) + (s.rot[knee] * DVec3::NEG_Z) * 0.012;
-        let jeans = limb(
-            &[pt(h), pt(thigh), pt(kn), pt(calf), pt(a)],
-            &[0.15, 0.135, 0.1, 0.105, 0.08].map(|w| w * px),
-        );
+        let pants = limb(&[pt(h), pt(thigh), pt(kn), pt(calf), pt(a)], &[0.15, 0.14, 0.11, 0.11, 0.09].map(|w| w * px));
+        let cuff = band(pt(kn.lerp(a, 0.86)), pt(a.lerp(kn, -0.03)), 0.085 * px);
+        let side = smooth_open(&[pt(h.lerp(kn, 0.08)), pt(thigh), pt(kn), pt(calf), pt(kn.lerp(a, 0.84))]);
         let fwd = cam.project_dir(a, s.rot[foot] * DVec3::Z);
         let fwd = if fwd.hypot() > 1e-6 { fwd.normalize() } else { Vec2::new(facing, 0.0) };
         let up = if Vec2::new(-fwd.y, fwd.x).y < 0.0 { Vec2::new(-fwd.y, fwd.x) } else { Vec2::new(fwd.y, -fwd.x) };
-        let boot = smooth_closed(&placed(&BOOT_SHAPE, pt(a), fwd, up, px));
-        vec![(jeans, color), (boot, if color == JEANS { BOOT } else { far(BOOT) })]
+        let mut parts = vec![Part::Velour(pants, shade(VELOUR)), Part::Fill(cuff, shade(RIB))];
+        parts.extend(stripes(side, shade(VELOUR), shade(STRIPE)));
+        parts.push(Part::Fill(smooth_closed(&placed(&SNEAKER_SHAPE, pt(a), fwd, up, px)), shade(SNEAKER)));
+        parts.push(Part::Fill(smooth_closed(&placed(&SOLE_SHAPE, pt(a), fwd, up, px)), shade(SOLE)));
+        parts
     };
-    let arm = |shoulder: usize, elbow: usize, hand: usize, sleeve: Color, skin: Color| -> Vec<(BezPath, Color)> {
+    let arm = |shoulder: usize, elbow: usize, hand: usize, shade: fn(Color) -> Color| -> Vec<Part> {
         let (sh, el, wr) = (s.pos[shoulder], s.pos[elbow], s.at(hand, DVec3::new(0.0, 0.02, 0.0)));
-        let sleeve_path = limb(
+        let sleeve = limb(
             &[pt(sh), pt(sh.lerp(el, 0.5)), pt(el), pt(el.lerp(wr, 0.5)), pt(wr)],
-            &[0.11, 0.1, 0.085, 0.085, 0.07].map(|w| w * px),
+            &[0.115, 0.105, 0.09, 0.09, 0.075].map(|w| w * px),
         );
+        let cuff = band(pt(el.lerp(wr, 0.86)), pt(wr), 0.078 * px);
+        let side = smooth_open(&[pt(sh.lerp(el, 0.1)), pt(sh.lerp(el, 0.5)), pt(el), pt(el.lerp(wr, 0.5)), pt(el.lerp(wr, 0.84))]);
         let dir = pt(s.at(hand, DVec3::new(0.0, -0.1, 0.0))) - pt(wr);
         let along = if dir.hypot() > 1e-6 { dir.normalize() } else { Vec2::new(0.0, 1.0) };
         let across = Vec2::new(-along.y, along.x) * facing;
-        let hand_path = smooth_closed(&placed(&HAND_SHAPE, pt(wr), along, across, px));
-        vec![(sleeve_path, sleeve), (hand_path, skin)]
+        let mut parts = vec![Part::Velour(sleeve, shade(VELOUR)), Part::Fill(cuff, shade(RIB))];
+        parts.extend(stripes(side, shade(VELOUR), shade(STRIPE)));
+        parts.push(Part::Fill(smooth_closed(&placed(&HAND_SHAPE, pt(wr), along, across, px)), shade(SKIN)));
+        parts
     };
+    let near_shade: fn(Color) -> Color = |c| c;
 
     let (near_leg, far_leg) = if right_near { ((HIP_R, KNEE_R, FOOT_R), (HIP_L, KNEE_L, FOOT_L)) } else { ((HIP_L, KNEE_L, FOOT_L), (HIP_R, KNEE_R, FOOT_R)) };
     let (near_arm, far_arm) = if right_near {
@@ -518,65 +556,58 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
         ((SHOULDER_L, ELBOW_L, HAND_L), (SHOULDER_R, ELBOW_R, HAND_R))
     };
 
-    let mut shapes: Vec<(BezPath, Color)> = Vec::new();
-    shapes.extend(arm(far_arm.0, far_arm.1, far_arm.2, far(SHIRT), far(SKIN)));
-    shapes.extend(leg(far_leg.0, far_leg.1, far_leg.2, far(JEANS)));
+    let mut parts: Vec<Part> = Vec::new();
+    parts.extend(arm(far_arm.0, far_arm.1, far_arm.2, far));
+    parts.extend(leg(far_leg.0, far_leg.1, far_leg.2, far));
 
-    // Torso: one shape from the hips up through the chest to the shoulders.
+    // Pants round the hips: a drawn pelvis shape in the pelvis's own frame.
     let pelvis = s.pos[PELVIS];
-    // It starts above the belt so its rounded end stays hidden.
-    let torso = limb(
-        &[
-            pt(s.at(PELVIS, DVec3::new(0.0, 0.1, 0.0))),
-            pt(s.pos[SPINE]),
-            pt(s.pos[CHEST]),
-            pt(s.at(CHEST, DVec3::new(0.0, 0.06, 0.0))),
-        ],
-        // Seen from the side: chest deeper than the waist, narrowing to the
-        // shoulders so the top ends below the chin.
-        &[0.22, 0.2, 0.25 * (1.0 + 0.05 * breath(look.time)), 0.2].map(|w| w * px),
-    );
-    shapes.push((torso, SHIRT));
-    // Jeans round the hips, with the belt.
-    // Jeans round the hips: a drawn pelvis shape (waist, hips, crotch) in
-    // the pelvis's own frame, so it tilts with him.
     let hip_up = cam.project_dir(pelvis, s.rot[PELVIS] * DVec3::Y);
     let hip_up = if hip_up.hypot() > 1e-6 { hip_up.normalize() } else { Vec2::new(0.0, -1.0) };
     let hip_side = Vec2::new(-hip_up.y, hip_up.x);
-    shapes.push((smooth_closed(&placed(&HIPS_SHAPE, pt(pelvis), hip_side, hip_up, px)), JEANS));
-    let belt = band(pt(s.at(PELVIS, DVec3::new(0.0, 0.07, 0.0))), pt(s.at(PELVIS, DVec3::new(0.0, 0.1, 0.0))), 0.225 * px);
-    shapes.push((belt, BELT));
+    parts.push(Part::Velour(smooth_closed(&placed(&HIPS_SHAPE, pt(pelvis), hip_side, hip_up, px)), VELOUR));
+    parts.extend(leg(near_leg.0, near_leg.1, near_leg.2, near_shade));
 
-    shapes.extend(leg(near_leg.0, near_leg.1, near_leg.2, JEANS));
-    if right_near {
-        // Holster on the right hip.
-        let top = s.at(PELVIS, DVec3::new(0.13, 0.06, 0.02));
-        let bottom = s.at(PELVIS, DVec3::new(0.135, -0.1, 0.03));
-        shapes.push((limb(&[pt(top), pt(bottom)], &[0.075 * px, 0.06 * px]), BELT));
-    }
-    let near = arm(near_arm.0, near_arm.1, near_arm.2, SHIRT, SKIN);
-    // A faint crease line so the near sleeve reads against the shirt.
-    let sleeve_line = near[0].0.clone();
-    shapes.extend(near);
+    // Jacket: from the hem over the chest to the shoulders, with a ribbed
+    // hem, a ribbed collar and a zip down the front.
+    let hem_bottom = s.at(PELVIS, DVec3::new(0.0, 0.04, 0.0));
+    let hem_top = s.at(PELVIS, DVec3::new(0.0, 0.1, 0.0));
+    let jacket = limb(
+        &[pt(hem_bottom), pt(s.pos[SPINE]), pt(s.pos[CHEST]), pt(s.at(CHEST, DVec3::new(0.0, 0.06, 0.0)))],
+        &[0.235, 0.215, 0.26 * (1.0 + 0.05 * breath(look.time)), 0.21].map(|w| w * px),
+    );
+    parts.push(Part::Velour(jacket, VELOUR));
+    parts.push(Part::Fill(band(pt(hem_bottom), pt(hem_top), 0.24 * px), RIB));
+    let collar_c = s.at(CHEST, DVec3::new(0.0, 0.08, 0.03));
+    // The zip runs down the front edge of the jacket.
+    let front = |p: DVec3, reach: f64| p + s.rot[CHEST] * DVec3::new(0.0, 0.0, reach);
+    let zip = smooth_open(&[pt(front(collar_c, 0.04)), pt(front(s.pos[CHEST], 0.115)), pt(front(s.pos[SPINE], 0.1)), pt(front(hem_top, 0.105))]);
+    parts.push(Part::Line(zip, RIB, 0.012 * px));
+    let pull = Ellipse::new(pt(front(collar_c, 0.05)) + Vec2::new(0.0, 0.03 * px), (0.012 * px, 0.022 * px), 0.0);
+    parts.push(Part::Fill(pull.to_path(0.1), ZIP));
 
-    // The near sleeve is the second-to-last shape so far (then its hand).
-    let sleeve_index = shapes.len() - 1;
+    parts.extend(arm(near_arm.0, near_arm.1, near_arm.2, near_shade));
 
     // Neck, then the head in profile with hair, ear and face.
     let neck = limb(
-        &[pt(s.at(CHEST, DVec3::new(0.0, 0.12, 0.0))), pt(s.at(HEAD, DVec3::new(-0.01, -0.07, -0.01)))],
+        &[pt(s.at(CHEST, DVec3::new(0.0, 0.08, 0.0))), pt(s.at(HEAD, DVec3::new(-0.01, -0.07, -0.01)))],
         &[0.1 * px, 0.09 * px],
     );
-    shapes.push((neck, SKIN));
     let head_c = pt(s.pos[HEAD]);
     let up_screen = cam.project_dir(s.pos[HEAD], s.rot[HEAD] * DVec3::Y);
     let up = if up_screen.hypot() > 1e-6 { up_screen.normalize() } else { Vec2::new(0.0, -1.0) };
     let fwd = Vec2::new(-up.y, up.x) * facing;
     let head_px = cam.project(s.pos[HEAD]).scale * k;
-    shapes.push((smooth_closed(&placed(&HEAD_SHAPE, head_c, fwd, up, head_px)), SKIN));
-    shapes.push((smooth_closed(&placed(&HAIR_SHAPE, head_c, fwd, up, head_px)), HAIR));
+    let mut head_parts = vec![
+        Part::Fill(neck, SKIN),
+        Part::Fill(smooth_closed(&placed(&HEAD_SHAPE, head_c, fwd, up, head_px)), SKIN),
+        Part::Fill(smooth_closed(&placed(&HAIR_SHAPE, head_c, fwd, up, head_px)), HAIR),
+    ];
     let ear = Ellipse::new(head_c + (fwd * -0.02 + up * 0.005) * head_px, (0.018 * head_px, 0.028 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2);
-    shapes.push((ear.to_path(0.1), crate::canvas3d::darken(SKIN, 0.12)));
+    head_parts.push(Part::Fill(ear.to_path(0.1), crate::canvas3d::darken(SKIN, 0.12)));
+    // The ribbed collar wraps the bottom of the neck.
+    head_parts.insert(1, Part::Fill(band(pt(s.at(CHEST, DVec3::new(0.0, 0.055, 0.0))), pt(s.at(CHEST, DVec3::new(0.0, 0.09, 0.01))), 0.105 * px), RIB));
+    parts.extend(head_parts);
 
     // Face details as thin strokes and a small eye.
     let blink = (look.time * 0.23) % 1.0 < 0.03;
@@ -592,20 +623,35 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
     }
     let eye = (!blink).then(|| Ellipse::new(at(0.062, 0.03), (0.01 * head_px, 0.007 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2));
     let line_w = (0.008 * head_px).max(1.0);
+    let sheen_w = 0.05 * px;
 
     // Everything in one fixed order, as a single item in the world.
     let depth = canvas.depth_of(pelvis);
     canvas.push(depth, move |scene| {
-        for (i, (path, color)) in shapes.iter().enumerate() {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, *color, None, path);
-            if i + 1 == sleeve_index {
-                scene.stroke(&Stroke::new(line_w * 0.8), Affine::IDENTITY, crate::canvas3d::darken(SHIRT, 0.3), None, &sleeve_line);
+        let id = Affine::IDENTITY;
+        for part in &parts {
+            match part {
+                Part::Fill(path, color) => scene.fill(Fill::NonZero, id, *color, None, path),
+                Part::Velour(path, color) => {
+                    // Velour catches the light at its edges: a soft lighter
+                    // rim inside the shape.
+                    scene.fill(Fill::NonZero, id, *color, None, path);
+                    scene.push_clip_layer(Fill::NonZero, id, path);
+                    let rim = crate::canvas3d::mix(*color, SHEEN, 0.55).with_alpha(0.5);
+                    scene.stroke(&Stroke::new(sheen_w), id, rim, None, path);
+                    scene.stroke(&Stroke::new(sheen_w * 0.4), id, rim, None, path);
+                    scene.pop_layer();
+                }
+                Part::Line(path, color, width) => {
+                    let stroke = Stroke::new(*width).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);
+                    scene.stroke(&stroke, id, *color, None, path);
+                }
             }
         }
         if let Some(eye) = &eye {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, FEATURE, None, eye);
+            scene.fill(Fill::NonZero, id, FEATURE, None, eye);
         }
-        scene.stroke(&Stroke::new(line_w).with_caps(vello::kurbo::Cap::Round), Affine::IDENTITY, FEATURE, None, &details);
+        scene.stroke(&Stroke::new(line_w).with_caps(vello::kurbo::Cap::Round), id, FEATURE, None, &details);
     });
 
     Anchors {

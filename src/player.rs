@@ -9,7 +9,7 @@ use crate::level::Level;
 const HALF_WIDTH: f64 = 0.35;
 const HEIGHT: f64 = 1.8;
 /// Height above the feet where the grappling line attaches (his raised hand).
-pub const MOUTH_HEIGHT: f64 = 1.9;
+pub const MOUTH_HEIGHT: f64 = 1.85;
 
 const RUN_SPEED: f64 = 14.0;
 /// Top speed multiplier gained by running flat out for a while.
