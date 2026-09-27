@@ -67,11 +67,6 @@ impl Camera {
         )
     }
 
-    /// Whether a surface at `p` with normal `n` faces the camera.
-    pub fn faces(&self, p: DVec3, n: DVec3) -> bool {
-        (self.eye - p).dot(n) > 0.0
-    }
-
     /// The range of world x visible at depth `z` (world z), with some margin.
     pub fn visible_x(&self, z: f64, screen_width: f64) -> (f64, f64) {
         let depth = (z - self.eye.z).max(0.05);
@@ -163,25 +158,6 @@ impl<'a> Canvas3d<'a> {
         }
     }
 
-    /// An ellipsoid whose semi-axes are the columns of `axes` (world space).
-    pub fn ellipsoid(&mut self, center: DVec3, axes: DMat3, color: Color) {
-        let p = self.camera.project(center);
-        let ellipse = self.project_ellipsoid(center, axes);
-        let r = ellipse.radii().x.max(ellipse.radii().y);
-        let seed = color_seed(color, axes.x_axis.length() + axes.y_axis.length());
-        let path = ellipse.to_path(0.1);
-        let grouped = self.is_group();
-        self.add_outline(&path);
-        self.push(p.depth, move |scene| {
-            let shadow = paint::ball_cel(p.pos, r, color);
-            if grouped {
-                paint::cel_fill(scene, &path, color, Some(&shadow), r * 2.0, seed, p.pos);
-            } else {
-                paint::cel(scene, &path, color, Some(&shadow), r * 2.0, seed, p.pos);
-            }
-        });
-    }
-
     /// The screen-space silhouette of an ellipsoid (affine approximation).
     pub fn project_ellipsoid(&self, center: DVec3, axes: DMat3) -> Ellipse {
         let p = self.camera.project(center);
@@ -227,21 +203,6 @@ impl<'a> Canvas3d<'a> {
         });
     }
 
-    /// Draws a 2D path mapped onto a surface. `map` turns path coordinates into
-    /// world points; the path is flattened and every vertex projected.
-    pub fn surface_path(&self, path: &BezPath, map: impl Fn(f64, f64) -> DVec3) -> BezPath {
-        let mut out = BezPath::new();
-        vello::kurbo::flatten(path, 0.02, |el| {
-            use vello::kurbo::PathEl;
-            match el {
-                PathEl::MoveTo(p) => out.move_to(self.camera.point(map(p.x, p.y))),
-                PathEl::LineTo(p) => out.line_to(self.camera.point(map(p.x, p.y))),
-                PathEl::ClosePath => out.close_path(),
-                _ => {}
-            }
-        });
-        out
-    }
 }
 
 /// A stable per-part seed so the watercolour edges don't shimmer.

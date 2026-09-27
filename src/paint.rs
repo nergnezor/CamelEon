@@ -20,7 +20,6 @@ pub const FLAT: bool = true;
 pub const INK: Color = Color::from_rgb8(0x1f, 0x16, 0x1e);
 /// Shadows lean towards a cool violet, lit sides towards warm peach.
 const SHADOW_TINT: Color = Color::from_rgb8(0x4a, 0x3c, 0x7a);
-const LIGHT_TINT: Color = Color::from_rgb8(0xff, 0xe6, 0xc8);
 /// Where the sun sits on screen (fraction of width and height).
 pub const SUN: (f64, f64) = (0.72, 0.18);
 
@@ -391,20 +390,6 @@ pub fn cel_fill(scene: &mut Scene, path: &BezPath, color: Color, shadow: Option<
         scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &body);
     }
     body
-}
-
-/// Crisp cel shadow for round things: a hard-edged crescent away from the light.
-pub fn ball_cel(center: Point, radius: f64, color: Color) -> Gradient {
-    let hot = center + Vec2::new(-0.45, -0.55) * radius * 0.45;
-    let shadow = cool_shadow(color);
-    Gradient::new_two_point_radial(hot, 0.0_f32, center, (radius * 1.1) as f32).with_stops([
-        (0.0, LIGHT_TINT.with_alpha(0.45)),
-        (0.12, LIGHT_TINT.with_alpha(0.45)),
-        (0.13, shadow.with_alpha(0.0)),
-        (0.72, shadow.with_alpha(0.0)),
-        (0.73, shadow.with_alpha(0.85)),
-        (1.0, shadow.with_alpha(0.85)),
-    ])
 }
 
 /// Crisp cel shadow along a tube.
