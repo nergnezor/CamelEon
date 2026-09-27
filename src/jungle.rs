@@ -215,6 +215,9 @@ pub struct WorldView<'a> {
     /// The hook the tongue would grab right now, if any.
     pub hook_hint: Option<usize>,
     pub screen_width: f64,
+    /// Konrad's feet, and whether he's on the ground: grass bends around him.
+    pub player: DVec2,
+    pub grounded: bool,
 }
 
 pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
@@ -224,7 +227,7 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
         if b.x1 < vx0 - 2.0 || b.x0 > vx1 + 2.0 {
             continue;
         }
-        draw_block(canvas, b);
+        draw_block(canvas, b, (vx0, vx1), view);
     }
     for c in &level.climbables {
         match c.kind {
@@ -247,7 +250,12 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
     draw_foreground(canvas, view.screen_width, view.time);
 }
 
-fn draw_block(canvas: &mut Canvas3d, b: &Block) {
+/// Shadow colour for ambient occlusion on the platforms.
+const OCCLUSION: Color = Color::from_rgb8(0x0c, 0x0a, 0x14);
+
+/// Draws a platform. `visible` is the range of x on screen, where grass
+/// tufts are drawn.
+fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &WorldView) {
     let cam = canvas.camera;
     let (top, front, side) = match b.kind {
         BlockKind::Ground => (Color::from_rgb8(0x3e, 0x62, 0x36), Color::from_rgb8(0x3a, 0x2a, 0x22), Color::from_rgb8(0x2a, 0x1e, 0x1a)),
@@ -303,6 +311,8 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
                 }
                 details.push((line, darken(front, 0.18), Some(0.04)));
             }
+            // Stones in the soil, lit from the upper right, each with a
+            // shadow under it.
             let rocks = ((b.x1 - b.x0) * 0.8) as i64;
             for i in 0..rocks {
                 let x = b.x0 + 0.3 + hash(seed + i, 7) * (b.x1 - b.x0 - 0.6);
@@ -312,17 +322,34 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
                 }
                 let c = cam.project(DVec3::new(x, y, b.z0));
                 let r = (0.1 + 0.15 * hash(seed + i, 9)) * c.scale;
-                details.push((Ellipse::new(c.pos, (r * 1.4, r), 0.0).to_path(0.1), lighten(front, 0.12), None));
+                let tilt = (hash(seed + i, 10) - 0.5) * 0.6;
+                details.push((Ellipse::new(c.pos + Vec2::new(-0.15, 0.3) * r, (r * 1.45, r * 1.05), tilt).to_path(0.1), darken(front, 0.35), None));
+                details.push((Ellipse::new(c.pos, (r * 1.4, r), tilt).to_path(0.1), lighten(front, 0.1), None));
+                details.push((Ellipse::new(c.pos + Vec2::new(0.35, -0.35) * r, (r * 0.7, r * 0.4), tilt).to_path(0.1), lighten(front, 0.3), None));
             }
-            // Grass or moss hanging over the front edge.
+            // Roots hanging out of the soil under the grass.
+            if b.kind == BlockKind::Ground {
+                let roots = ((b.x1 - b.x0) * 0.35) as i64;
+                for i in 0..roots {
+                    let x = b.x0 + 0.4 + hash(seed + i, 11) * (b.x1 - b.x0 - 0.8);
+                    let len = 0.5 + 1.4 * hash(seed + i, 12);
+                    let mut root = BezPath::new();
+                    root.move_to(p(x, b.y1 - 0.1, b.z0));
+                    let bend = (hash(seed + i, 13) - 0.5) * 0.6;
+                    root.curve_to(p(x + bend, b.y1 - len * 0.35, b.z0), p(x - bend, b.y1 - len * 0.7, b.z0), p(x + bend * 0.5, b.y1 - len, b.z0));
+                    details.push((root, mix(front, Color::from_rgb8(0x7a, 0x5a, 0x40), 0.6), Some(0.03 + 0.03 * hash(seed + i, 14))));
+                }
+            }
+            // Grass or moss hanging over the front edge, in uneven clumps.
             let fringe_color = if b.kind == BlockKind::Ground { top } else { Color::from_rgb8(0x6a, 0x9a, 0x4a) };
             let mut fringe = BezPath::new();
             fringe.move_to(p(b.x0, b.y1, b.z0));
             let mut x = b.x0;
-            let step = 0.22;
             let mut i = 0;
             while x < b.x1 {
-                let len = 0.15 + 0.25 * hash(seed + i, 3);
+                let step = 0.12 + 0.2 * hash(seed + i, 4);
+                let clump = 0.5 + (x * 0.9 + seed as f64).sin() * 0.5;
+                let len = (0.08 + 0.3 * hash(seed + i, 3)) * (0.5 + clump);
                 fringe.line_to(p((x + step / 2.0).min(b.x1), b.y1 - len, b.z0));
                 x += step;
                 fringe.line_to(p(x.min(b.x1), b.y1, b.z0));
@@ -368,6 +395,38 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     let dx = (b.x0 - cam.eye.x).max(cam.eye.x - b.x1).max(0.0);
     let dy = (b.y0 - cam.eye.y).max(cam.eye.y - b.y1).max(0.0);
     let depth = canvas.depth_of(center) + (dx + dy) * 0.001;
+    // Ambient occlusion on the front: a shadow under the grass, then darker
+    // with depth and towards the corners.
+    let occlusion = |a: f32| OCCLUSION.with_alpha(a);
+    let fall = Gradient::new_linear(p(b.x0, b.y1, b.z0), p(b.x0, b.y1 - 6.0, b.z0)).with_stops([
+        (0.0, occlusion(0.45)),
+        (0.05, occlusion(0.0)),
+        (0.3, occlusion(0.12)),
+        (1.0, occlusion(0.55)),
+    ]);
+    let edge = (0.9 / (b.x1 - b.x0)).min(0.3) as f32;
+    let corners = Gradient::new_linear(p(b.x0, b.y1, b.z0), p(b.x1, b.y1, b.z0)).with_stops([
+        (0.0, occlusion(0.4)),
+        (edge, occlusion(0.0)),
+        (1.0 - edge, occlusion(0.0)),
+        (1.0, occlusion(0.4)),
+    ]);
+    // The top: sunlit along the front edge, darker further back.
+    let top_face = (cam.eye.y > b.y1).then(|| {
+        let xm = (b.x0 + b.x1) / 2.0;
+        let shade = Gradient::new_linear(p(xm, b.y1, b.z0), p(xm, b.y1, b.z1)).with_stops([
+            (0.0, lighten(top, 0.25).with_alpha(0.35)),
+            (0.25, top.with_alpha(0.0)),
+            (1.0, occlusion(0.35)),
+        ]);
+        let mut rim = BezPath::new();
+        rim.move_to(p(b.x0, b.y1, b.z0));
+        rim.line_to(p(b.x1, b.y1, b.z0));
+        (quad(p(b.x0, b.y1, b.z0), p(b.x1, b.y1, b.z0), p(b.x1, b.y1, b.z1), p(b.x0, b.y1, b.z1)), shade, rim, lighten(top, 0.35))
+    });
+    if b.kind != BlockKind::Log {
+        draw_tufts(canvas, b, top, visible, view);
+    }
     let seed = paint::seed(&[b.x0, b.y1]);
     canvas.push(depth, move |scene| {
         // Platforms are solid: an opaque base under the translucent washes,
@@ -386,9 +445,88 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
                 None => wash(scene, path, *color, None, scale * 0.3, seed ^ (i as u64 + 20), anchor),
             }
         }
+        scene.fill(Fill::NonZero, Affine::IDENTITY, &fall, None, &front_face);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, &corners, None, &front_face);
         scene.pop_layer();
         paint::ink(scene, &front_face, scale * 2.0, seed, anchor);
+        if let Some((face, shade, rim, rim_color)) = &top_face {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, shade, None, face);
+            scene.stroke(&Stroke::new(0.04 * scale), Affine::IDENTITY, rim_color.with_alpha(0.5), None, rim);
+        }
     });
+}
+
+/// Grass tufts (moss on stone) along the top of a platform, swaying in the
+/// wind. They break up its straight edge. The row along the front edge is
+/// sorted on its own, so it can hide Konrad's feet as he walks behind it.
+fn draw_tufts(canvas: &mut Canvas3d, b: &Block, top: Color, visible: (f64, f64), view: &WorldView) {
+    let cam = canvas.camera;
+    let time = view.time;
+    // Konrad pushes the grass aside where he stands or walks.
+    let on_top = view.grounded && (view.player.y - b.y1).abs() < 0.3;
+    let stone = b.kind == BlockKind::Stone;
+    let (x0, x1) = (b.x0.max(visible.0 - 1.0), b.x1.min(visible.1 + 1.0));
+    if x1 <= x0 {
+        return;
+    }
+    let (height, spacing) = if stone { (0.16, 0.5) } else { (0.34, 0.28) };
+    let colors = if stone {
+        [Color::from_rgb8(0x4e, 0x76, 0x3a), Color::from_rgb8(0x7a, 0xa6, 0x52)]
+    } else {
+        [darken(top, 0.12), lighten(top, 0.25)]
+    };
+    let sway = 0.08 + 0.25 * wind();
+    let base_x_of = |x: f64, k: i64| x + (k as f64 - 1.5) * 0.03;
+    // Rows: along the front edge, and two further back on the top.
+    for (row, dz) in [(0u64, 0.08), (1, 0.7), (2, 1.5)] {
+        let z = b.z0 + dz;
+        if z > b.z1 || (row > 0 && cam.eye.y < b.y1) {
+            continue;
+        }
+        let mut blades = [BezPath::new(), BezPath::new()];
+        let first = (x0 / spacing).floor() as i64;
+        let last = (x1 / spacing).ceil() as i64;
+        for i in first..=last {
+            let seed = row * 1000 + 60;
+            if hash(i, seed) < 0.25 {
+                continue;
+            }
+            let x = (i as f64 + hash(i, seed + 1)) * spacing;
+            if x < b.x0 + 0.05 || x > b.x1 - 0.05 {
+                continue;
+            }
+            let tuft = height * (0.5 + hash(i, seed + 2));
+            let gust = (time * 1.7 + x * 0.8).sin() * sway;
+            for k in 0..4 {
+                let spread = (k as f64 - 1.5) * 0.35 + (hash(i * 4 + k, seed + 3) - 0.5) * 0.3;
+                let len = tuft * (0.6 + 0.5 * hash(i * 4 + k, seed + 4));
+                let mut lean = spread * len * 0.8 + gust * len;
+                let away = base_x_of(x, k) - view.player.x;
+                if on_top && away.abs() < 0.7 {
+                    lean += away.signum() * (1.0 - away.abs() / 0.7) * len * 0.9;
+                }
+                let base = DVec3::new(base_x_of(x, k), b.y1 - 0.02, z);
+                let tip = DVec3::new(base.x + lean, b.y1 + len, z);
+                let mid = DVec3::new(base.x + lean * 0.3, b.y1 + len * 0.6, z);
+                let w = 0.032;
+                let path = &mut blades[(k + i).rem_euclid(2) as usize];
+                path.move_to(cam.point(base - DVec3::X * w));
+                path.quad_to(cam.point(mid), cam.point(tip));
+                path.quad_to(cam.point(mid + DVec3::X * w), cam.point(base + DVec3::X * w));
+                path.close_path();
+            }
+        }
+        let depth = canvas.depth_of(DVec3::new((x0 + x1) / 2.0, b.y1, z));
+        // The back rows are sorted with the platform, just in front of it.
+        let depth = if row == 0 { depth } else { depth.min(canvas.depth_of(DVec3::new((b.x0 + b.x1) / 2.0, b.y1, (b.z0 + b.z1) / 2.0)) - 0.01) };
+        let fog = 0.12 * row as f32;
+        let colors = colors.map(|c| darken(c, fog));
+        canvas.push(depth, move |scene| {
+            for (path, color) in blades.iter().zip(colors) {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, path);
+            }
+        });
+    }
 }
 
 fn draw_vine(canvas: &mut Canvas3d, x: f64, y0: f64, y1: f64, time: f64) {
@@ -478,6 +616,63 @@ fn draw_trunk(canvas: &mut Canvas3d, x: f64, top: f64) {
             let c = Circle::new(p, r).to_path(0.1);
             let color = if i % 2 == 0 { LEAF } else { lighten(LEAF, 0.1) };
             wash(scene, &c, color, Some(&paint::ball_glaze(p, r, color)), r * 2.0, 50 + i as u64, p);
+        }
+    });
+    draw_trunk_base(canvas, x, z, r);
+}
+
+/// Where a trunk meets the ground: it flares out into roots that snake
+/// over the ground towards the camera, with a soft shadow round the base.
+fn draw_trunk_base(canvas: &mut Canvas3d, x: f64, z: f64, r: f64) {
+    let cam = canvas.camera;
+    let seed = (x * 7.0) as i64;
+    let shadow = canvas.project_ellipsoid(DVec3::new(x, 0.0, z - 0.2), glam::DMat3::from_cols(DVec3::X * 2.4, DVec3::Z * 1.3, DVec3::Y * 1e-3));
+    let shadow_shape = Affine::translate(shadow.center().to_vec2()) * Affine::rotate(shadow.rotation()) * Affine::scale_non_uniform(shadow.radii().x, shadow.radii().y);
+    let shadow_fill = Gradient::new_radial((0.0, 0.0), 1.0).with_stops([
+        (0.0, OCCLUSION.with_alpha(0.5)),
+        (0.5, OCCLUSION.with_alpha(0.25)),
+        (1.0, OCCLUSION.with_alpha(0.0)),
+    ]);
+    // The flare: wider at the ground, curving into the trunk.
+    let mut flare = BezPath::new();
+    flare.move_to(cam.point(DVec3::new(x - r * 1.7, -0.05, z)));
+    flare.quad_to(cam.point(DVec3::new(x - r * 0.95, 0.1, z)), cam.point(DVec3::new(x - r * 0.97, 1.6, z)));
+    flare.line_to(cam.point(DVec3::new(x + r * 0.97, 1.6, z)));
+    flare.quad_to(cam.point(DVec3::new(x + r * 0.95, 0.1, z)), cam.point(DVec3::new(x + r * 1.7, -0.05, z)));
+    flare.close_path();
+    // It fades out upwards into the trunk.
+    let flare_fill = Gradient::new_linear(cam.point(DVec3::new(x, 0.3, z)), cam.point(DVec3::new(x, 1.6, z)))
+        .with_stops([(0.0, darken(BARK, 0.05)), (1.0, darken(BARK, 0.05).with_alpha(0.0))]);
+    // Roots: each a curve from the flare out over the ground, thinning out.
+    let mut roots: Vec<([Point; 4], f64)> = Vec::new();
+    for k in 0..5i64 {
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let reach = 1.0 + 1.3 * hash(seed + k, 71);
+        let toward = 0.2 + 1.0 * hash(seed + k, 72);
+        let start = DVec3::new(x + side * r * (0.5 + 0.15 * k as f64), 0.5, z);
+        let end = DVec3::new(x + side * (r + reach), -0.02, z - toward);
+        let c1 = DVec3::new(start.x + side * reach * 0.3, 0.25, z - toward * 0.2);
+        let c2 = DVec3::new(end.x - side * reach * 0.3, 0.05, z - toward * 0.8);
+        let scale = cam.project(start).scale;
+        roots.push(([cam.point(start), cam.point(c1), cam.point(c2), cam.point(end)], (0.2 + 0.12 * hash(seed + k, 73)) * scale));
+    }
+    let base = cam.project(DVec3::new(x, 0.0, z - 0.6));
+    let bark_light = lighten(BARK, 0.18);
+    canvas.push(base.depth, move |scene| {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow_fill, Some(shadow_shape), &shadow);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, &flare_fill, None, &flare);
+        for (pts, width) in &roots {
+            // Drawn in pieces, each thinner, so the root tapers.
+            for piece in 0..4 {
+                let (t0, t1) = (piece as f64 / 4.0, (piece + 1) as f64 / 4.0);
+                let seg = vello::kurbo::ParamCurve::subsegment(&vello::kurbo::CubicBez::new(pts[0], pts[1], pts[2], pts[3]), t0..t1);
+                let w = width * (1.0 - 0.22 * piece as f64);
+                let cap = Stroke::new(w).with_caps(vello::kurbo::Cap::Round);
+                scene.stroke(&cap, Affine::IDENTITY, darken(BARK, 0.08), None, &seg);
+                // Light along the top of the root.
+                let lit = Stroke::new(w * 0.3).with_caps(vello::kurbo::Cap::Round);
+                scene.stroke(&lit, Affine::translate((0.0, -w * 0.25)), bark_light.with_alpha(0.5), None, &seg);
+            }
         }
     });
 }
@@ -608,36 +803,82 @@ fn draw_goal(canvas: &mut Canvas3d, at: DVec2, time: f64) {
     });
 }
 
+/// Plants close to the camera, framing the view: ferns rising from below
+/// and leafy branches hanging from above. They're out of focus (a soft halo
+/// round a dark silhouette) and move fastest with the camera, which gives
+/// the scene depth.
 fn draw_foreground(canvas: &mut Canvas3d, w: f64, time: f64) {
     let cam = canvas.camera;
-    // Ferns close to the camera, rising from below the screen.
-    let z = -3.6;
+    let z = -5.0;
     let (x0, x1) = cam.visible_x(z, w);
-    let spacing = 4.5;
+    let spacing = 4.0;
     for i in (x0 / spacing).floor() as i64 - 1..=(x1 / spacing).ceil() as i64 + 1 {
-        if hash(i, 50) < 0.35 {
+        let x = (i as f64 + hash(i, 51)) * spacing;
+        let sway = (time * 0.9 + i as f64).sin() * 0.04 * (0.4 + wind()) + 0.06 * wind();
+        let color = mix(LEAF_DARK, ACCENTS[(hash(i, 54) * 4.0) as usize % 4], 0.25);
+        let mut shape = BezPath::new();
+        let kind = hash(i, 50);
+        if kind < 0.5 {
+            // A fern: fronds of paired leaflets, fanning up from below.
+            let base = DVec3::new(x, -2.0 - hash(i, 52) * 0.6, z);
+            let fronds = 4 + (hash(i, 53) * 3.0) as usize;
+            for k in 0..fronds {
+                let spread = (k as f64 / (fronds - 1) as f64 - 0.5) * 1.6 + sway;
+                let len = 2.6 + 1.4 * hash(i * 8 + k as i64, 55);
+                frond(&mut shape, &cam, base, spread, len, 0.32);
+            }
+        } else if kind < 0.7 {
+            // A branch hanging into view from above, leaves along it.
+            let top = DVec3::new(x, 4.6 + 1.0 * hash(i, 56), z);
+            let len = 2.2 + 1.2 * hash(i, 57);
+            frond(&mut shape, &cam, top, std::f64::consts::PI + sway * 2.0 + (hash(i, 58) - 0.5) * 0.5, len, 0.26);
+        } else {
             continue;
         }
-        let x = (i as f64 + hash(i, 51)) * spacing;
-        let base = DVec3::new(x, -2.2 - hash(i, 52) * 1.2, z);
-        let pr = cam.project(base);
-        let s = pr.scale * (1.1 + hash(i, 53) * 0.8);
-        let sway = (time * 1.1 + i as f64).sin() * 0.05 * (0.4 + wind()) + 0.08 * wind();
-        let color = if hash(i, 54) < 0.5 { LEAF_DARK } else { mix(darken(LEAF, 0.35), ACCENTS[1], 0.3) };
-        canvas.push(pr.depth, move |scene| {
-            for k in 0..7 {
-                let a = -PI / 2.0 + (k as f64 - 3.0) * 0.32 + sway;
-                let len = s * (1.6 - (k as f64 - 3.0).abs() * 0.18);
-                let tip = pr.pos + Vec2::new(a.cos(), a.sin()) * len;
-                let bend = Vec2::new(-(a.sin()), a.cos()) * len * 0.2 * if k < 3 { -1.0 } else { 1.0 };
-                let mid = pr.pos.midpoint(tip) + bend;
-                let normal = Vec2::new(-(a.sin()), a.cos()) * s * 0.18;
-                let mut frond = BezPath::new();
-                frond.move_to(pr.pos);
-                frond.quad_to(mid + normal, tip);
-                frond.quad_to(mid - normal, pr.pos);
-                wash(scene, &frond, color, None, len * 0.4, (i as u64) << 4 | k as u64, pr.pos);
-            }
+        let blur = 0.09 * cam.project(DVec3::new(x, 0.0, z)).scale;
+        let depth = cam.project(DVec3::new(x, 0.0, z)).depth;
+        canvas.push(depth, move |scene| {
+            // Out of focus: a faint halo round the shape.
+            let halo = Stroke::new(blur * 1.5).with_join(vello::kurbo::Join::Round);
+            scene.stroke(&halo, Affine::IDENTITY, color.with_alpha(0.3), None, &shape);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.92), None, &shape);
         });
     }
+}
+
+/// Adds a frond to `path`: a curving stem from `base` at `angle` (0 = up,
+/// positive leaning right) of `len` world units, with leaflets in pairs
+/// that shrink towards the tip; `leaf` is the largest leaflet's length.
+fn frond(path: &mut BezPath, cam: &Camera, base: DVec3, angle: f64, len: f64, leaf: f64) {
+    let dir = |a: f64| DVec3::new(a.sin(), a.cos(), 0.0);
+    // The stem arcs over: its direction turns further as it goes.
+    let at = |t: f64| {
+        let a = angle + angle.signum() * t * t * 0.6;
+        base + dir(angle) * len * t * 0.5 + dir(a) * len * t * 0.5
+    };
+    let steps = 12;
+    for j in 1..steps {
+        let t = j as f64 / steps as f64;
+        let p = at(t);
+        let along = (at(t + 0.02) - at(t - 0.02)).normalize();
+        let size = leaf * (1.0 - t * 0.75);
+        for side in [-1.0, 1.0] {
+            // Leaflets point outwards and a little towards the tip.
+            let out = DVec3::new(-along.y, along.x, 0.0) * side;
+            let tip = p + (out * 0.85 + along * 0.5) * size;
+            let n = along * size * 0.18;
+            path.move_to(cam.point(p - n));
+            path.quad_to(cam.point(p.lerp(tip, 0.5) + along * size * 0.2), cam.point(tip));
+            path.quad_to(cam.point(p.lerp(tip, 0.5) - along * size * 0.1), cam.point(p + n));
+            path.close_path();
+        }
+    }
+    // The stem itself, a thin tapered sliver.
+    let w = leaf * 0.06;
+    path.move_to(cam.point(base - DVec3::X * w));
+    for j in 1..=steps {
+        path.line_to(cam.point(at(j as f64 / steps as f64)));
+    }
+    path.line_to(cam.point(base + DVec3::X * w));
+    path.close_path();
 }

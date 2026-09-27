@@ -28,6 +28,8 @@ pub enum Sfx {
     /// A fly caught.
     Gulp,
     Checkpoint,
+    /// The camouflage coming on: a soft rising shimmer.
+    Camo,
     /// Fell into a pit.
     Fall,
     Win,
@@ -446,6 +448,10 @@ impl Synth {
                     let pan = (i as f32 - 1.5) * 0.2;
                     self.add(Voice { delay: i as f32 * 0.09, len: 0.9, decay: 0.25, wave: Wave::Bell, tone: 0.12, f0: f, f1: f, pan, ..Voice::default() });
                 }
+            }
+            Sfx::Camo => {
+                self.add(Voice { len: 1.4, attack: 0.5, decay: 0.5, noise: 0.07, n0: 1800.0, n1: 6500.0, q: 3.0, glide: 1.2, ..Voice::default() });
+                self.add(Voice { len: 1.4, attack: 0.4, decay: 0.45, tone: 0.035, f0: 660.0, f1: 1320.0, glide: 1.2, vibrato: 0.01, vibrato_rate: 7.0, ..Voice::default() });
             }
             Sfx::Fall => {
                 self.add(Voice { len: 0.9, attack: 0.02, decay: 0.35, wave: Wave::Triangle, tone: 0.16, f0: 520.0, f1: 110.0, glide: 0.7, vibrato: 0.04, vibrato_rate: 9.0, ..Voice::default() });

@@ -13,7 +13,7 @@ use std::f64::consts::PI;
 use glam::{DQuat, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Ellipse, Point, Rect, Shape, Stroke, Vec2};
 use vello::Scene;
-use vello::peniko::{Color, Fill};
+use vello::peniko::{Color, Fill, Gradient};
 
 use crate::canvas3d::Canvas3d;
 use crate::hair::{HairFrame, HairStyle, Strand};
@@ -62,6 +62,11 @@ const HAIR_DARK: Color = Color::from_rgb8(0x16, 0x26, 0x62);
 const HAIR: Color = Color::from_rgb8(0x2a, 0x52, 0xb8);
 const HAIR_LIGHT: Color = Color::from_rgb8(0x5c, 0x8e, 0xf0);
 const HAIR_SHINE: Color = Color::from_rgb8(0xb4, 0xd2, 0xff);
+/// The shimmering edge of the camouflage as it sweeps over him.
+const CAMO_EDGE: Color = Color::from_rgb8(0xc8, 0xf4, 0xe0);
+/// How much of the tracksuit the camouflage covers at most; a hint of
+/// purple stays.
+const CAMO_COVER: f32 = 0.85;
 const FEATURE: Color = Color::from_rgb8(0x2a, 0x1c, 0x18);
 
 /// Height of the soles below the ankle bone.
@@ -341,7 +346,7 @@ pub fn plant(skeleton: &Skeleton, pose: &Pose, root: Root, grounded: bool) -> So
 }
 
 /// Appearance that isn't part of the skeleton.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct Look {
     pub time: f64,
     /// World-space velocity and stride, so the hair can trail and bounce.
@@ -358,6 +363,11 @@ pub struct Look {
     pub wind: f64,
     /// Breathing in, as in `Motion`: the chest fills out.
     pub breath: f64,
+    /// Camouflage, 0..1: the tracksuit takes on the colours behind him,
+    /// sweeping up from his feet.
+    pub camo: f64,
+    /// The camouflage's ground colour and the colour of its blotches.
+    pub camo_colors: (Color, Color),
 }
 
 /// Points on Konrad that the game needs.
@@ -581,6 +591,37 @@ enum Part {
     FadeEnd,
 }
 
+/// The camouflage over the tracksuit: the ground colour and the blotches'
+/// colour as gradients from `feet` to `top` (covered up to how far the
+/// sweep has come, with a shimmer at its edge), and the blotches, slowly
+/// shifting around `centre` (all in screen space; `px` pixels per unit).
+fn camouflage(look: &Look, feet: Point, top: Point, centre: Point, px: f64) -> (Gradient, Gradient, BezPath) {
+    // The sweep runs a little past both ends so it starts and ends clean.
+    let front = (look.camo.clamp(0.0, 1.0) * 1.3 - 0.15) as f32;
+    let sweeping = look.camo < 0.999;
+    let sweep = |color: Color| {
+        let stops: [(f32, Color); 21] = std::array::from_fn(|i| {
+            let t = i as f32 / 20.0;
+            let cover = ((front - t) / 0.12 + 0.5).clamp(0.0, 1.0);
+            let edge = if sweeping { (1.0 - (t - front).abs() / 0.08).max(0.0) } else { 0.0 };
+            let c = crate::canvas3d::mix(color, CAMO_EDGE, edge as f64 * 0.8);
+            (t, c.with_alpha(CAMO_COVER * cover.max(edge * 0.7)))
+        });
+        Gradient::new_linear(feet, top).with_stops(stops)
+    };
+    let mut blotches = BezPath::new();
+    let hash = |i: usize, k: f64| ((i as f64 * 12.9898 + k * 78.233).sin() * 43758.5453).fract().abs();
+    for i in 0..22 {
+        let x = (hash(i, 1.0) - 0.5) * 0.6;
+        let y = hash(i, 2.0) * 2.0 - 1.1;
+        let r = (0.045 + 0.065 * hash(i, 3.0)) * (1.0 + 0.2 * (look.time * 0.6 + i as f64).sin());
+        let at = centre + Vec2::new(x, -y) * px + Vec2::new((look.time * 0.4 + i as f64 * 2.1).sin(), (look.time * 0.33 + i as f64).cos()) * 0.02 * px;
+        blotches.extend(Ellipse::new(at, (r * px, r * px * 0.7), hash(i, 4.0) * 3.0).path_elements(0.1));
+    }
+    let (ground, spots) = look.camo_colors;
+    (sweep(ground), sweep(spots), blotches)
+}
+
 /// An open smooth curve through `points` (Catmull-Rom).
 fn smooth_open(points: &[Point]) -> BezPath {
     let n = points.len();
@@ -608,8 +649,11 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
     let forward_x = cam.project_dir(s.pos[HEAD], s.root.rot * DVec3::Z).x;
     let facing = if forward_x >= 0.0 { 1.0 } else { -1.0 };
     // Double side stripes: a white line with a thin line of fabric down its middle.
+    // The camouflage dims the white stripes and sneakers too (evenly, not
+    // with the sweep), or they'd give him away.
+    let hide = |c: Color| crate::canvas3d::mix(c, look.camo_colors.1, look.camo.clamp(0.0, 1.0) * 0.75);
     let stripes = |line: BezPath, fabric: Color, white: Color| {
-        vec![Part::Line(line.clone(), white, 0.024 * px), Part::Line(line, fabric, 0.008 * px)]
+        vec![Part::Line(line.clone(), hide(white), 0.024 * px), Part::Line(line, hide(fabric), 0.008 * px)]
     };
 
     let leg = |hip: usize, knee: usize, foot: usize, shade: fn(Color) -> Color| -> Vec<Part> {
@@ -624,8 +668,8 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
         let up = if Vec2::new(-fwd.y, fwd.x).y < 0.0 { Vec2::new(-fwd.y, fwd.x) } else { Vec2::new(fwd.y, -fwd.x) };
         let mut parts = vec![Part::Velour(pants, shade(VELOUR)), Part::Fill(cuff, shade(RIB))];
         parts.extend(stripes(side, shade(VELOUR), shade(STRIPE)));
-        parts.push(Part::Fill(smooth_closed(&placed(&SNEAKER_SHAPE, pt(a), fwd, up, px)), shade(SNEAKER)));
-        parts.push(Part::Fill(smooth_closed(&placed(&SOLE_SHAPE, pt(a), fwd, up, px)), shade(SOLE)));
+        parts.push(Part::Fill(smooth_closed(&placed(&SNEAKER_SHAPE, pt(a), fwd, up, px)), hide(shade(SNEAKER))));
+        parts.push(Part::Fill(smooth_closed(&placed(&SOLE_SHAPE, pt(a), fwd, up, px)), hide(shade(SOLE))));
         parts
     };
     let arm = |shoulder: usize, elbow: usize, hand: usize, shade: fn(Color) -> Color| -> Vec<Part> {
@@ -751,6 +795,8 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
     let rim_alpha = (0.45 * (look.light - 0.35) / 0.65).clamp(0.0, 0.45) as f32;
     let shade_alpha = (0.55 * (1.0 - look.light)).clamp(0.0, 0.5) as f32;
 
+    let camo = (look.camo > 0.005).then(|| camouflage(look, pt(s.pos[FOOT_L].lerp(s.pos[FOOT_R], 0.5)), pt(s.at(HEAD, DVec3::new(0.0, 0.14, 0.0))), pt(pelvis), px));
+
     // Everything in one fixed order, as a single item in the world.
     let depth = canvas.depth_of(pelvis);
     canvas.push(depth, move |scene| {
@@ -787,6 +833,12 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
                     scene.stroke(&Stroke::new(sheen_w), id, rim, None, path);
                     scene.stroke(&Stroke::new(sheen_w * 0.4), id, rim, None, path);
                     scene.pop_layer();
+                    if let Some((ground, spots, blotches)) = &camo {
+                        scene.fill(Fill::NonZero, id, ground, None, path);
+                        scene.push_clip_layer(Fill::NonZero, id, path);
+                        scene.fill(Fill::NonZero, id, spots, None, blotches);
+                        scene.pop_layer();
+                    }
                     lit(scene, path);
                 }
                 Part::Line(path, color, width) => {

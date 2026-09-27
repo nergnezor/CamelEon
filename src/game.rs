@@ -36,6 +36,15 @@ const MAX_STEP: f64 = 1.0 / 120.0;
 /// The grappling line and its hook.
 const CABLE: Color = Color::from_rgb8(0x2a, 0x2e, 0x36);
 const HOOK: Color = Color::from_rgb8(0x9a, 0xa4, 0xb0);
+/// Camouflage colours (ground, blotches): the jungle behind him, or bark
+/// in front of a tree trunk.
+const CAMO_LEAVES: (Color, Color) = (Color::from_rgb8(0x1c, 0x3e, 0x30), Color::from_rgb8(0x3a, 0x6a, 0x3e));
+const CAMO_BARK: (Color, Color) = (Color::from_rgb8(0x4a, 0x36, 0x2a), Color::from_rgb8(0x6e, 0x50, 0x38));
+/// Seconds standing still before the camouflage comes on, and how long it
+/// takes to cover him and to drop when he moves.
+const CAMO_DELAY: f64 = 0.8;
+const CAMO_ON: f64 = 1.4;
+const CAMO_OFF: f64 = 0.3;
 
 /// Which controls are currently held down, plus analog stick axes.
 #[derive(Default, Clone, Copy)]
@@ -132,6 +141,8 @@ pub struct Game {
     pub sounds: Vec<Sfx>,
     /// Footfall counter, from the stride: a step sounds when it changes.
     footfall: i64,
+    /// Camouflage, 0..1 (see `konrad::Look::camo`).
+    camo: f64,
 }
 
 impl Game {
@@ -173,6 +184,7 @@ impl Game {
             particles: Vec::new(),
             sounds: Vec::new(),
             footfall: 0,
+            camo: 0.0,
         }
     }
 
@@ -300,6 +312,7 @@ impl Game {
         // One breath about every four seconds at rest, panting when winded.
         self.breath_phase += dt * (1.5 + 3.5 * self.exertion);
         self.weather.update(dt, self.time);
+        self.update_camo(dt);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
         let speed = (self.player.vel.length() / 34.0).min(1.0);
@@ -346,6 +359,27 @@ impl Game {
                 _ => {}
             }
         }
+    }
+
+    /// Standing still, his tracksuit slowly blends into the surroundings;
+    /// moving drops the camouflage at once.
+    fn update_camo(&mut self, dt: f64) {
+        let p = &self.player;
+        let hiding = p.on_ground && matches!(p.state, State::Normal) && p.idle > CAMO_DELAY;
+        if hiding && self.camo == 0.0 {
+            self.sounds.push(Sfx::Camo);
+        }
+        self.camo = if hiding { (self.camo + dt / CAMO_ON).min(1.0) } else { (self.camo - dt / CAMO_OFF).max(0.0) };
+    }
+
+    /// What the camouflage blends into: bark in front of a tree trunk,
+    /// otherwise the leaves.
+    fn camo_colors(&self) -> (Color, Color) {
+        let p = self.player.pos;
+        let trunk = self.level.climbables.iter().any(|c| {
+            c.kind == crate::level::ClimbKind::Trunk && (p.x - c.x).abs() < c.half_width + 0.4 && p.y + 1.0 > c.y0 && p.y < c.y1
+        });
+        if trunk { CAMO_BARK } else { CAMO_LEAVES }
     }
 
     /// The surroundings, for the ambient sound.
@@ -513,6 +547,8 @@ impl Game {
                     checkpoint: self.checkpoint,
                     hook_hint: self.hook_hint(),
                     screen_width: w,
+                    player: self.player.pos,
+                    grounded: self.player.on_ground,
                 },
             );
             weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
@@ -646,6 +682,8 @@ impl Game {
             light: self.light_at(p.pos),
             wind: self.weather.wind,
             breath: self.breath(),
+            camo: self.camo,
+            camo_colors: self.camo_colors(),
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).
