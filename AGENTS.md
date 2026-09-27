@@ -53,7 +53,7 @@ saves the last frame (convert with e.g. `magick out.ppm out.png`).
 - Script steps: `KEYS:seconds`, where KEYS is any of `L R U D J T` (left,
   right, up, down, jump, tongue) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
   Keys are held for the step and released at the next one (jump fires on
-  release).
+  release, or by itself once fully charged after 0.2 s).
 - `@N` warps to checkpoint N first, e.g. `@4 R:0.7` (open ground, high speed).
 - Environment: `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`,
   `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,

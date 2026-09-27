@@ -21,9 +21,10 @@ const AIR_ACCEL: f64 = 56.0;
 const GRAVITY: f64 = 32.0;
 const JUMP_SPEED: f64 = 13.5;
 /// Holding jump on the ground crouches deeper for up to this long (seconds);
-/// he leaps when it's let go. The deeper the crouch, the higher the jump:
-/// from `JUMP_MIN` to `JUMP_MAX` times `JUMP_SPEED`.
-const CHARGE_TIME: f64 = 0.4;
+/// he leaps when it's let go, or by himself once fully charged. The deeper
+/// the crouch, the higher the jump: from `JUMP_MIN` to `JUMP_MAX` times
+/// `JUMP_SPEED`.
+const CHARGE_TIME: f64 = 0.2;
 const JUMP_MIN: f64 = 0.8;
 const JUMP_MAX: f64 = 1.35;
 const MAX_FALL: f64 = 22.0;
@@ -197,12 +198,13 @@ impl Player {
         self.coyote = if self.on_ground { COYOTE_TIME } else { (self.coyote - dt).max(0.0) };
 
         if let Some(held) = self.charge {
-            // Crouching to jump: leap on release. Off an edge he can still
-            // leap within the coyote time, after that the crouch is lost.
+            // Crouching to jump: leap on release or at full charge. Off an
+            // edge he can still leap within the coyote time, after that the
+            // crouch is lost.
             let held = held + dt;
             if !self.on_ground && self.coyote <= 0.0 {
                 self.charge = None;
-            } else if !c.jump {
+            } else if !c.jump || held >= CHARGE_TIME {
                 self.leap(held, events);
             } else {
                 self.charge = Some(held);

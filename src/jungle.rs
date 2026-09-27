@@ -218,6 +218,8 @@ pub struct WorldView<'a> {
     /// Konrad's feet, and whether he's on the ground: grass bends around him.
     pub player: DVec2,
     pub grounded: bool,
+    /// 0 dry .. 1 pouring: the ground darkens, gets a sheen and puddles.
+    pub rain: f64,
 }
 
 pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
@@ -250,6 +252,9 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
     draw_foreground(canvas, view.screen_width, view.time);
 }
 
+/// The sky as reflected in wet ground and puddles.
+const SKY_REFLECTION: Color = Color::from_rgb8(0x8c, 0xa6, 0xb8);
+
 /// Shadow colour for ambient occlusion on the platforms.
 const OCCLUSION: Color = Color::from_rgb8(0x0c, 0x0a, 0x14);
 
@@ -262,6 +267,9 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
         BlockKind::Stone => (Color::from_rgb8(0x4a, 0x62, 0x44), Color::from_rgb8(0x4e, 0x58, 0x64), Color::from_rgb8(0x36, 0x3e, 0x4a)),
         BlockKind::Log => (Color::from_rgb8(0x6a, 0x4a, 0x34), Color::from_rgb8(0x54, 0x3a, 0x2a), Color::from_rgb8(0x9a, 0x7a, 0x56)),
     };
+    // Wet ground is darker.
+    let wet = view.rain.clamp(0.0, 1.0);
+    let (top, front, side) = (darken(top, 0.25 * wet as f32), darken(front, 0.3 * wet as f32), darken(side, 0.3 * wet as f32));
     // Don't bother drawing far below the screen.
     let y0 = b.y0.max(cam.eye.y - 25.0);
     let p = |x: f64, y: f64, z: f64| cam.point(DVec3::new(x, y, z));
@@ -414,8 +422,10 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
     // The top: sunlit along the front edge, darker further back.
     let top_face = (cam.eye.y > b.y1).then(|| {
         let xm = (b.x0 + b.x1) / 2.0;
+        // In the rain the front edge shines with the sky's reflection.
+        let sheen = mix(lighten(top, 0.25), SKY_REFLECTION, wet);
         let shade = Gradient::new_linear(p(xm, b.y1, b.z0), p(xm, b.y1, b.z1)).with_stops([
-            (0.0, lighten(top, 0.25).with_alpha(0.35)),
+            (0.0, sheen.with_alpha((0.35 + 0.2 * wet) as f32)),
             (0.25, top.with_alpha(0.0)),
             (1.0, occlusion(0.35)),
         ]);
@@ -424,6 +434,9 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
         rim.line_to(p(b.x1, b.y1, b.z0));
         (quad(p(b.x0, b.y1, b.z0), p(b.x1, b.y1, b.z0), p(b.x1, b.y1, b.z1), p(b.x0, b.y1, b.z1)), shade, rim, lighten(top, 0.35))
     });
+    if b.kind == BlockKind::Ground && wet > 0.05 && cam.eye.y > b.y1 {
+        draw_puddles(canvas, b, visible, view, depth);
+    }
     if b.kind != BlockKind::Log {
         draw_tufts(canvas, b, top, visible, view);
     }
@@ -452,6 +465,66 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
         if let Some((face, shade, rim, rim_color)) = &top_face {
             scene.fill(Fill::NonZero, Affine::IDENTITY, shade, None, face);
             scene.stroke(&Stroke::new(0.04 * scale), Affine::IDENTITY, rim_color.with_alpha(0.5), None, rim);
+        }
+    });
+}
+
+/// Puddles on top of a platform in the rain: they grow as it keeps
+/// raining, reflect the sky and ripple where drops land. `depth` is the
+/// platform's, so they're drawn right on top of it.
+fn draw_puddles(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &WorldView, depth: f64) {
+    let cam = canvas.camera;
+    let grow = (view.rain * 1.4 - 0.1).clamp(0.0, 1.0);
+    let spacing = 3.2;
+    let (x0, x1) = (b.x0.max(visible.0 - 2.0), b.x1.min(visible.1 + 2.0));
+    let mut puddles = Vec::new();
+    for i in (x0 / spacing).floor() as i64..=(x1 / spacing).ceil() as i64 {
+        if hash(i, 81) < 0.45 {
+            continue;
+        }
+        let rx = (0.5 + 0.9 * hash(i, 82)) * grow;
+        let x = (i as f64 + hash(i, 83)) * spacing;
+        if x - rx < b.x0 + 0.2 || x + rx > b.x1 - 0.2 || rx < 0.05 {
+            continue;
+        }
+        let z = b.z0 + 0.4 + (b.z1 - b.z0 - 1.2) * hash(i, 84);
+        let rz = (0.25 + 0.2 * hash(i, 85)) * grow;
+        let center = DVec3::new(x, b.y1 + 0.004, z);
+        let flat = |sx: f64, sz: f64| canvas.project_ellipsoid(center, glam::DMat3::from_cols(DVec3::X * sx, DVec3::Z * sz, DVec3::Y * 1e-4));
+        let shape = flat(rx, rz);
+        // The far side reflects the bright sky, the near side the dark
+        // canopy.
+        let far = cam.point(center + DVec3::Z * rz);
+        let near = cam.point(center - DVec3::Z * rz);
+        let fill = Gradient::new_linear(far, near).with_stops([
+            (0.0, SKY_REFLECTION.with_alpha(0.55)),
+            (1.0, mix(SKY_REFLECTION, LEAF_DARK, 0.6).with_alpha(0.5)),
+        ]);
+        // Ripples: rings that spread and fade, a few at a time.
+        let mut ripples = Vec::new();
+        for k in 0..3i64 {
+            let cycle = 0.9 + 0.4 * hash(i * 3 + k, 86);
+            let t = (view.time / cycle + hash(i * 3 + k, 87)).fract();
+            let n = (view.time / cycle + hash(i * 3 + k, 87)).floor() as i64;
+            let at = DVec3::new(x + (hash(n * 7 + k, 88) - 0.5) * rx, center.y, z + (hash(n * 7 + k, 89) - 0.5) * rz);
+            let r = 0.05 + 0.3 * t;
+            let ring = canvas.project_ellipsoid(at, glam::DMat3::from_cols(DVec3::X * r, DVec3::Z * r, DVec3::Y * 1e-4));
+            ripples.push((ring, (1.0 - t) * 0.5 * view.rain));
+        }
+        puddles.push((shape, fill, ripples));
+    }
+    if puddles.is_empty() {
+        return;
+    }
+    let scale = cam.project(DVec3::new((x0 + x1) / 2.0, b.y1, b.z0)).scale;
+    canvas.push(depth - 0.005, move |scene| {
+        for (shape, fill, ripples) in &puddles {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, fill, None, shape);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, shape);
+            for (ring, alpha) in ripples {
+                scene.stroke(&Stroke::new(0.015 * scale), Affine::IDENTITY, Color::WHITE.with_alpha(*alpha as f32), None, ring);
+            }
+            scene.pop_layer();
         }
     });
 }

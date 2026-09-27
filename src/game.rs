@@ -94,6 +94,8 @@ struct Particle {
     life: f64,
     color: Color,
     size: f64,
+    /// A puff of dust: floats instead of falling, grows and fades.
+    puff: bool,
 }
 
 pub struct Game {
@@ -261,6 +263,7 @@ impl Game {
                 self.squash_vel -= speed * 0.25;
                 let feet = DVec3::new(self.player.pos.x, self.player.pos.y, 0.0);
                 self.burst(feet, Color::from_rgb8(0x9a, 0x7a, 0x50), (speed as usize / 3).min(10));
+                self.burst(feet, Color::from_rgb8(0x6a, 0x9a, 0x4a), (speed as usize / 4).min(6));
             }
         }
         if events.jumped {
@@ -354,6 +357,10 @@ impl Game {
             match p.state {
                 State::Normal if p.on_ground && p.vel.x.abs() > 1.0 => {
                     self.sounds.push(Sfx::Step { speed: (p.vel.x.abs() / 30.0).min(1.0) as f32 });
+                    if p.vel.x.abs() > 10.0 {
+                        let (feet, vx) = (DVec3::new(p.pos.x, p.pos.y + 0.05, 0.1), p.vel.x);
+                        self.kick_up(feet, vx);
+                    }
                 }
                 State::Climbing(_) if p.vel.y.abs() > 0.5 => self.sounds.push(Sfx::Climb),
                 _ => {}
@@ -380,6 +387,37 @@ impl Game {
             c.kind == crate::level::ClimbKind::Trunk && (p.x - c.x).abs() < c.half_width + 0.4 && p.y + 1.0 > c.y0 && p.y < c.y1
         });
         if trunk { CAMO_BARK } else { CAMO_LEAVES }
+    }
+
+    /// A footfall at speed kicks up a puff of dust, or splashes in the rain.
+    fn kick_up(&mut self, feet: DVec3, vx: f64) {
+        let wet = self.weather.rain;
+        let dust = Color::from_rgb8(0x9a, 0x8c, 0x72);
+        if wet < 0.5 {
+            for k in 0..2 {
+                let spread = (self.time * 13.0 + k as f64 * 2.1).sin();
+                self.particles.push(Particle {
+                    pos: feet + DVec3::new(-vx.signum() * 0.2, 0.05, spread * 0.2),
+                    vel: DVec3::new(-vx * 0.06 + spread * 0.3, 0.5 + 0.3 * k as f64, spread * 0.4),
+                    life: 0.7,
+                    color: crate::canvas3d::mix(dust, Color::from_rgb8(0x6a, 0x74, 0x60), wet * 2.0),
+                    size: 0.12 + 0.05 * k as f64,
+                    puff: true,
+                });
+            }
+        } else {
+            for k in 0..5 {
+                let a = self.time * 17.0 + k as f64 * 1.3;
+                self.particles.push(Particle {
+                    pos: feet,
+                    vel: DVec3::new(-vx * 0.1 + a.cos() * 1.2, 2.0 + a.sin().abs() * 1.5, a.sin() * 0.8),
+                    life: 0.35,
+                    color: Color::from_rgb8(0xd0, 0xe0, 0xec).with_alpha(0.7),
+                    size: 0.035,
+                    puff: false,
+                });
+            }
+        }
     }
 
     /// The surroundings, for the ambient sound.
@@ -418,7 +456,11 @@ impl Game {
     fn update_effects(&mut self, dt: f64) {
         self.flash = (self.flash - dt * 1.5).max(0.0);
         for p in &mut self.particles {
-            p.vel.y -= 12.0 * dt;
+            if p.puff {
+                p.vel *= (-dt * 3.0).exp();
+            } else {
+                p.vel.y -= 12.0 * dt;
+            }
             p.pos += p.vel * dt;
             p.life -= dt;
         }
@@ -435,6 +477,7 @@ impl Game {
                 life: 0.6 + (i % 3) as f64 * 0.2,
                 color,
                 size: 0.06 + (i % 4) as f64 * 0.02,
+                puff: false,
             });
         }
     }
@@ -549,6 +592,7 @@ impl Game {
                     screen_width: w,
                     player: self.player.pos,
                     grounded: self.player.on_ground,
+                    rain,
                 },
             );
             weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
@@ -561,6 +605,19 @@ impl Game {
         }
         for p in &self.particles {
             let pr = camera.project(p.pos);
+            if p.puff {
+                // A soft puff that grows as it fades.
+                let r = p.size * pr.scale * (1.0 + 2.5 * (0.7 - p.life).max(0.0));
+                let alpha = (0.45 * p.life / 0.7).min(0.45) as f32;
+                let soft = Gradient::new_radial(pr.pos, r as f32).with_stops([
+                    (0.0, p.color.with_alpha(alpha)),
+                    (1.0, p.color.with_alpha(0.0)),
+                ]);
+                canvas.push(pr.depth, move |scene| {
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, &soft, None, &Circle::new(pr.pos, r));
+                });
+                continue;
+            }
             let r = p.size * pr.scale * p.life.min(1.0);
             let color = p.color;
             canvas.push(pr.depth, move |scene| {
