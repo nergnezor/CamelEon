@@ -1,0 +1,115 @@
+# AGENTS.md
+
+Guidance for coding agents working on **Camel Eon**, a 2.5D jungle platformer
+in Rust. The hero, Konrad (Flashback-inspired, purple velour tracksuit, big
+blue shader-rendered hair), runs, jumps, climbs and swings through the jungle.
+Graphics are GPU vector graphics (Vello on wgpu), not sprites. It runs in a
+window on desktop, on the web (WebGPU), and in the kitty terminal.
+
+Live web build: https://nergnezor.github.io/CamelEon/ (deployed by
+`.github/workflows/pages.yml` on every push to `main`).
+
+## Conventions
+
+- **All code, comments, identifiers and commit messages are in English.** The
+  maintainer may chat in Swedish; the code stays English regardless.
+- Match the surrounding style: doc comments on items, short comments that
+  explain *why*, no commented-out code.
+- The frame budget is **60 Hz on mobile**. Measure (see below) before and after
+  anything that adds drawing work.
+- Commit and push only when asked. Pushing to `main` deploys the web build.
+
+## Environment and commands
+
+The maintainer is on NixOS. `shell.nix` provides the runtime libraries (Wayland,
+X11, Vulkan, udev); `.envrc` loads it with direnv. Without direnv, wrap commands
+in `nix-shell --run '…'`.
+
+| Task | Command |
+|---|---|
+| Play (window) | `cargo run --release` |
+| Hot reload | `dx serve --hotpatch` (press `r` in its terminal to rebuild and restart) |
+| Terminal mode | `cargo run --release -- --terminal` (kitty) or `--direct` (over SSH) |
+| Web build | `web/build.sh` → `dist/` (needs `wasm-bindgen-cli` matching `Cargo.lock`) |
+| Check the wasm target | `cargo build --release --target wasm32-unknown-unknown` |
+| Screenshot / test | `cargo run --release -- --snapshot out.ppm 'SCRIPT'` |
+
+Before committing, make sure both the native build and the wasm target compile
+without warnings.
+
+### Hot reload limits
+
+`dx serve --hotpatch` (subsecond) patches function bodies into the running
+game. It **cannot** change struct layouts or things created at startup (the GPU
+pipelines, the hair renderer). After such changes the running instance keeps the
+old behaviour: restart it with `r`. When a user reports "nothing changed", this
+is the first thing to rule out.
+
+### Snapshot tool (the main way to verify visual changes)
+
+`--snapshot OUT.ppm 'SCRIPT'` runs the game headless with scripted input and
+saves the last frame (convert with e.g. `magick out.ppm out.png`).
+
+- Script steps: `KEYS:seconds`, where KEYS is any of `L R U D J T` (left,
+  right, up, down, jump, tongue) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
+  Keys are held for the step and released at the next one (jump fires on
+  release).
+- `@N` warps to checkpoint N first, e.g. `@4 R:0.7` (open ground, high speed).
+- Environment: `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`,
+  `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
+  `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped).
+- It prints the scene build time and a status line per step (position,
+  velocity, state), which is handy for checking movement numerically.
+- It renders a frame of a fresh game before the real one, so stale GPU caches
+  show up in snapshots too.
+
+Only kill processes you started yourself; the maintainer usually has the game
+running.
+
+## Architecture
+
+`src/main.rs` picks the mode; everything else is shared.
+
+| File | Role |
+|---|---|
+| `game.rs` | Game state and update loop: player, camera (look-ahead and zoom with speed), hair spring, breathing, effects; `draw` fills the layers |
+| `player.rs` | Movement: running with momentum boost, charged jump, coyote time, climbing, tongue grappling and swinging |
+| `level.rs` | Level layout: blocks, climbables, hooks, checkpoints |
+| `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch, climb, swing), drawing in a fixed layer order, hair strands and beard |
+| `rig.rs` | Bones, poses (slerp blending) and forward kinematics |
+| `canvas3d.rs` | Perspective camera and painter's-sorted 3D drawing onto a Vello scene |
+| `jungle.rs` | Parallax background, trees, vines, energy cells, global wind |
+| `weather.rs` | Rain, wind gusts, fog, pit mist, leaves, fireflies, birds |
+| `paint.rs` | Drawing helpers and detail levels |
+| `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |
+| `hair.rs` | Shader hair: strands → wgpu pass → texture drawn by Vello as an image |
+| `window.rs` | winit window (desktop and web), input, adaptive resolution |
+| `terminal.rs` | kitty graphics protocol frontend |
+| `snapshot.rs` | Headless snapshot and GPU benchmark tool |
+| `touch.rs`, `gamepad.rs`, `stats.rs` | Touch controls, gamepads (gilrs), FPS overlay |
+
+### Frame pipeline
+
+1. `Game::draw` fills three Vello scenes (`frame::Layers`): `far` and `mid`
+   (background, rendered at half resolution) and `front` (world, Konrad, HUD,
+   at full resolution). It returns `FrameInfo` with the hair strands and post
+   settings.
+2. The hair pass draws the strands into a 512² texture.
+3. Vello renders each layer to its own texture.
+4. A quarter-resolution pass does light shafts and bloom; a composite pass
+   does depth of field (blurring far/mid), the dusk grade, vignette, sun glow
+   and the rain grade.
+
+### Gotchas
+
+- Vello's `render_to_texture` needs `Rgba8Unorm` targets with
+  `STORAGE_BINDING`, and writes straight (not premultiplied) alpha.
+- A texture registered with Vello (`register_texture`) is cached in its image
+  atlas: call `mark_override_image_dirty` whenever its contents change.
+- A texture can't be sampled and rendered to in the same pass; the light and
+  composite passes have separate bind groups for this reason.
+- Konrad is drawn as one group in a **fixed part order**, not depth-sorted per
+  part: per-part sorting made parts flicker in front of each other.
+- kurbo panics in debug builds on `line_to` without a preceding `move_to`.
+- Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
+  single-threaded, and there's no hot reload.

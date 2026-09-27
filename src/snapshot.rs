@@ -5,7 +5,7 @@
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
 //! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
-//! `CAMEL_EON_HAIR=vector`, `CAMEL_EON_WEATHER=rain|clear`.
+//! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`.
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::util::RenderContext;

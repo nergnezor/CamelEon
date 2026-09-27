@@ -216,8 +216,9 @@ impl Game {
             }
             // Victory: ignore the player and jump for joy.
             let since = self.time - won;
+            // Hold jump a moment each time, so he crouches and leaps.
             controls = Controls {
-                jump: true,
+                jump: since % 0.9 < 0.2,
                 jump_pressed: since % 0.9 < dt,
                 ..Controls::default()
             };
