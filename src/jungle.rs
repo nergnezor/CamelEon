@@ -61,12 +61,28 @@ const LAYERS: [Layer; 4] = [
 ];
 
 /// Sky and background layers, drawn straight into the scene (always behind).
-pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f64) {
+/// Wind strength, 0 calm .. 1 gusty: sways trees, ferns and vines. Set once
+/// per frame by the game from the weather.
+static WIND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x3FE0_0000_0000_0000); // 0.5
+
+pub fn set_wind(wind: f64) {
+    WIND.store(wind.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn wind() -> f64 {
+    f64::from_bits(WIND.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Sky and background hills. The two far layers go into `far` and the two
+/// nearer ones into `mid`; the renderer blurs them for depth of field.
+/// `cam`, `w` and `h` describe the (half-resolution) layer images.
+pub fn draw_background(far: &mut Scene, mid: &mut Scene, cam: &Camera, w: f64, h: f64, time: f64) {
+    let scene = &mut *far;
     let sky = Gradient::new_linear((0.0, 0.0), (0.0, h)).with_stops([SKY_TOP, SKY_HORIZON, SKY_HORIZON]);
     scene.fill(Fill::NonZero, Affine::IDENTITY, &sky, None, &Rect::new(0.0, 0.0, w, h));
     let sun = Point::new(w * paint::SUN.0, h * paint::SUN.1);
-    let glow = Gradient::new_radial(sun, (h * 0.5) as f32).with_stops([
-        Color::from_rgb8(0xff, 0xf6, 0xd0).with_alpha(0.9),
+    let glow = Gradient::new_radial(sun, (h * 0.45) as f32).with_stops([
+        Color::from_rgb8(0xff, 0xf6, 0xd0).with_alpha(0.65),
         Color::from_rgb8(0xff, 0xf6, 0xd0).with_alpha(0.0),
     ]);
     scene.fill(Fill::NonZero, Affine::IDENTITY, &glow, None, &Rect::new(0.0, 0.0, w, h));
@@ -88,6 +104,7 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
     }
 
     for (li, layer) in LAYERS.iter().enumerate() {
+        let scene: &mut Scene = if li < 2 { &mut *far } else { &mut *mid };
         let color = mix(layer.color, FOG, layer.fog);
         let (x0, x1) = cam.visible_x(layer.z, w);
         let height = |x: f64| {
@@ -130,7 +147,9 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
                 let size = layer.tree_size * (0.7 + 0.6 * hash(i, layer.seed + 10));
                 let p = cam.project(DVec3::new(x, height(x) - 0.3, layer.z));
                 let tf = Affine::translate(p.pos.to_vec2()) * Affine::scale_non_uniform(p.scale * size, -p.scale * size);
-                let sway = (time * 0.8 + i as f64).sin() * 0.04;
+                let sway = (time * 0.8 + i as f64).sin() * 0.04 * (0.4 + wind()) + wind() * 0.04;
+                // The whole tree leans with the wind.
+                let tf = tf * Affine::skew(sway * 0.6, 0.0);
                 let seed = (i as u64).wrapping_mul(31) ^ layer.seed;
                 // Some trees blossom or turn: pastel accents, hazed with distance.
                 let color = if hash(i, layer.seed + 40) < 0.45 {
@@ -148,24 +167,6 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
             }
         }
 
-        // Sun rays between the layers.
-        if li == 1 {
-            for k in 0..4 {
-                let x = w * (0.15 + 0.25 * k as f64) + (cam.eye.x * -2.0) % (w * 0.25);
-                let spread = w * 0.06 * (1.0 + (time * 0.3 + k as f64).sin() * 0.3);
-                let mut ray = BezPath::new();
-                ray.move_to((x, -10.0));
-                ray.line_to((x + spread, -10.0));
-                ray.line_to((x + spread * 3.0 - w * 0.2, h));
-                ray.line_to((x - w * 0.2, h));
-                ray.close_path();
-                let g = Gradient::new_linear((0.0, 0.0), (0.0, h)).with_stops([
-                    Color::WHITE.with_alpha(0.18),
-                    Color::WHITE.with_alpha(0.0),
-                ]);
-                scene.fill(Fill::NonZero, Affine::IDENTITY, &g, None, &ray);
-            }
-        }
     }
 }
 
@@ -393,7 +394,7 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block) {
 fn draw_vine(canvas: &mut Canvas3d, x: f64, y0: f64, y1: f64, time: f64) {
     let cam = canvas.camera;
     let z = 0.45;
-    let sway = |y: f64| (y * 1.3 + time * 1.5).sin() * 0.06 + (y1 - y) * 0.0;
+    let sway = |y: f64| (y * 1.3 + time * 1.5).sin() * 0.06 * (0.4 + wind()) + (y1 - y) * 0.01 * wind();
     let mut stem = BezPath::new();
     let n = ((y1 - y0) / 0.4).ceil() as usize;
     for i in 0..=n {
@@ -621,7 +622,7 @@ fn draw_foreground(canvas: &mut Canvas3d, w: f64, time: f64) {
         let base = DVec3::new(x, -2.2 - hash(i, 52) * 1.2, z);
         let pr = cam.project(base);
         let s = pr.scale * (1.1 + hash(i, 53) * 0.8);
-        let sway = (time * 1.1 + i as f64).sin() * 0.05;
+        let sway = (time * 1.1 + i as f64).sin() * 0.05 * (0.4 + wind()) + 0.08 * wind();
         let color = if hash(i, 54) < 0.5 { LEAF_DARK } else { mix(darken(LEAF, 0.35), ACCENTS[1], 0.3) };
         canvas.push(pr.depth, move |scene| {
             for k in 0..7 {

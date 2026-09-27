@@ -12,6 +12,7 @@ use std::f64::consts::PI;
 
 use glam::{DQuat, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Ellipse, Point, Shape, Stroke, Vec2};
+use vello::Scene;
 use vello::peniko::{Color, Fill};
 
 use crate::canvas3d::Canvas3d;
@@ -52,6 +53,9 @@ const STRIPE: Color = Color::from_rgb8(0xee, 0xe8, 0xf4);
 const ZIP: Color = Color::from_rgb8(0xc8, 0xcc, 0xd4);
 const SNEAKER: Color = Color::from_rgb8(0xee, 0xea, 0xe4);
 const SOLE: Color = Color::from_rgb8(0x9a, 0x9a, 0xa2);
+/// Warm sunlight on his edges, and the cool of the shade.
+const RIM: Color = Color::from_rgb8(0xff, 0xe2, 0xb0);
+const SHADE: Color = Color::from_rgb8(0x10, 0x14, 0x2e);
 const SKIN: Color = Color::from_rgb8(0xd4, 0x9c, 0x7a);
 /// Big blue hair: the dark mass underneath, the locks, and their shine.
 const HAIR_DARK: Color = Color::from_rgb8(0x16, 0x26, 0x62);
@@ -318,6 +322,8 @@ pub struct Look {
     /// facing (−1..1, lagging behind his head when he turns).
     pub hair_swing: DVec2,
     pub hair_facing: f64,
+    /// Sunlight on him: 1 in the open, lower in shade or rain.
+    pub light: f64,
 }
 
 /// Points on Konrad that the game needs.
@@ -687,14 +693,37 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
     let eye = (!blink).then(|| Ellipse::new(at(0.062, 0.03), (0.01 * head_px, 0.007 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2));
     let line_w = (0.008 * head_px).max(1.0);
     let sheen_w = 0.05 * px;
+    // The sun is up and to the right of the screen.
+    let sun_dir = Vec2::new(0.55, -0.83);
+    let rim_w = 0.035 * px;
+    let rim_alpha = (0.45 * (look.light - 0.35) / 0.65).clamp(0.0, 0.45) as f32;
+    let shade_alpha = (0.55 * (1.0 - look.light)).clamp(0.0, 0.5) as f32;
 
     // Everything in one fixed order, as a single item in the world.
     let depth = canvas.depth_of(pelvis);
     canvas.push(depth, move |scene| {
         let id = Affine::IDENTITY;
+        // Rim light: the part's outline shifted away from the sun and
+        // stroked inside the part, leaving a bright crescent on the sunny
+        // edge. Shade: a cool wash over each part when out of the sun.
+        let lit = |scene: &mut Scene, path: &BezPath| {
+            if rim_alpha > 0.01 {
+                scene.push_clip_layer(Fill::NonZero, id, path);
+                // Shifted further than half the stroke width, so the far side
+                // falls outside the part entirely.
+                scene.stroke(&Stroke::new(rim_w), Affine::translate(-sun_dir * rim_w * 0.9), RIM.with_alpha(rim_alpha), None, path);
+                scene.pop_layer();
+            }
+            if shade_alpha > 0.01 {
+                scene.fill(Fill::NonZero, id, SHADE.with_alpha(shade_alpha), None, path);
+            }
+        };
         for part in &parts {
             match part {
-                Part::Fill(path, color) => scene.fill(Fill::NonZero, id, *color, None, path),
+                Part::Fill(path, color) => {
+                    scene.fill(Fill::NonZero, id, *color, None, path);
+                    lit(scene, path);
+                }
                 Part::Shaded(path, gradient) => scene.fill(Fill::NonZero, id, gradient, None, path),
                 Part::Image(image, transform) => scene.draw_image(image, *transform),
                 Part::Velour(path, color) => {
@@ -706,6 +735,7 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
                     scene.stroke(&Stroke::new(sheen_w), id, rim, None, path);
                     scene.stroke(&Stroke::new(sheen_w * 0.4), id, rim, None, path);
                     scene.pop_layer();
+                    lit(scene, path);
                 }
                 Part::Line(path, color, width) => {
                     let stroke = Stroke::new(*width).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);

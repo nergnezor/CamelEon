@@ -13,11 +13,9 @@ use crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::{cursor, execute, terminal};
-use vello::peniko::Color;
 use vello::util::RenderContext;
-use vello::wgpu;
-use vello::{AaConfig, Renderer, RendererOptions, Scene};
 
+use crate::frame::FrameRenderer;
 use crate::game::Game;
 use crate::gamepad::Gamepads;
 use crate::stats::FrameStats;
@@ -72,21 +70,11 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
     let dev_id = pollster::block_on(context.device(None)).ok_or("no compatible GPU found")?;
     let device = &context.devices[dev_id].device;
     let queue = &context.devices[dev_id].queue;
-    let mut renderer = Renderer::new(
-        device,
-        RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-    )?;
-
-    let hair = crate::hair::HairRenderer::new(device, &mut renderer);
+    let mut renderer = FrameRenderer::new(device)?;
     let _guard = TerminalGuard::enter()?;
     let mut out = io::BufWriter::new(io::stdout().lock());
-    let mut scene = Scene::new();
     let mut game = Game::new();
     let mut gamepads = Gamepads::new();
-    let mut target: Option<Target> = None;
     // The last shared-memory frame sent, until the terminal has read it.
     let mut pending: Option<(PathBuf, Instant)> = None;
     let mut frame_number: u64 = 0;
@@ -138,35 +126,18 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         let scale = (transfer.pixel_budget() / pixels).sqrt().min(1.0);
         let width = ((size.width as f64 * scale) as u32).max(1);
         let height = ((size.height as f64 * scale) as u32).max(1);
-        let target = match &mut target {
-            Some(t) if t.width == width && t.height == height => t,
-            _ => target.insert(Target::new(device, width, height)),
-        };
 
         let work_start = Instant::now();
         game.pad = gamepads.poll();
         let now = Instant::now();
         game.update(now.duration_since(last_frame).as_secs_f64());
         last_frame = now;
-        scene.reset();
-        if let Some(frame) = game.draw(&mut scene, width as f64, height as f64, Some(&hair.image)) {
-            hair.render(device, queue, &frame);
-        }
-        stats.draw(&mut scene, width as f64, height as f64, true, 1.0);
-
-        renderer.render_to_texture(
-            device,
-            queue,
-            &scene,
-            &target.view,
-            &vello::RenderParams {
-                base_color: Color::BLACK,
-                width,
-                height,
-                antialiasing_method: AaConfig::Area,
-            },
-        )?;
-        let pixels = target.read_pixels(device, queue)?;
+        renderer.render(device, queue, width, height, |layers, hair| {
+            let info = game.draw(layers, width as f64, height as f64, hair);
+            stats.draw(&mut layers.front, width as f64, height as f64, true, 1.0);
+            info
+        })?;
+        let pixels = renderer.read_pixels(device, queue)?;
 
         execute!(out, cursor::MoveTo(0, 0))?;
         let placement = Placement {
@@ -193,98 +164,6 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(rest) = FRAME_TIME.checked_sub(frame_start.elapsed()) {
             std::thread::sleep(rest);
         }
-    }
-}
-
-/// The texture Vello renders into and the buffer the pixels are read back through.
-pub(crate) struct Target {
-    width: u32,
-    height: u32,
-    texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
-    buffer: wgpu::Buffer,
-    /// wgpu requires each row in the buffer to be aligned to 256 bytes.
-    padded_row: u32,
-}
-
-impl Target {
-    pub(crate) fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terminal target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let padded_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("terminal readback"),
-            size: padded_row as u64 * height as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        Self {
-            width,
-            height,
-            texture,
-            view,
-            buffer,
-            padded_row,
-        }
-    }
-
-    /// Copies the texture to the CPU as tightly packed RGBA pixels.
-    pub(crate) fn read_pixels(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_row),
-                    rows_per_image: None,
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([encoder.finish()]);
-
-        let slice = self.buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely())?;
-
-        let row = (self.width * 4) as usize;
-        let mut pixels = Vec::with_capacity(row * self.height as usize);
-        {
-            let mapped = slice.get_mapped_range();
-            for chunk in mapped.chunks(self.padded_row as usize) {
-                pixels.extend_from_slice(&chunk[..row]);
-            }
-        }
-        self.buffer.unmap();
-        Ok(pixels)
     }
 }
 

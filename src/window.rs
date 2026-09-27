@@ -4,10 +4,9 @@
 use std::sync::Arc;
 
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu::{self, CurrentSurfaceTexture};
-use vello::{AaConfig, Renderer, RendererOptions, Scene};
+use vello::Scene;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -16,6 +15,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::{Game, Input};
+use crate::frame::FrameRenderer;
 use crate::gamepad::Gamepads;
 use crate::stats::FrameStats;
 use crate::touch::TouchControls;
@@ -23,12 +23,10 @@ use crate::touch::TouchControls;
 struct RenderState {
     surface: RenderSurface<'static>,
     window: Arc<Window>,
-    renderer: Renderer,
-    /// Vello renders here, possibly below screen resolution; it's then
-    /// scaled up onto the screen with linear filtering.
-    target: Option<(u32, u32, wgpu::TextureView)>,
+    /// Renders frames, possibly below screen resolution; they're then scaled
+    /// up onto the screen with linear filtering.
+    frame: FrameRenderer,
     upscaler: wgpu::util::TextureBlitter,
-    hair: crate::hair::HairRenderer,
 }
 
 /// Keeps the game at 60 FPS on slow devices. If frames are slow and the CPU
@@ -143,15 +141,12 @@ struct App {
     context: Option<RenderContext>,
     state: Option<RenderState>,
     proxy: EventLoopProxy<UserEvent>,
-    scene: Scene,
     game: Game,
     gamepads: Gamepads,
     touch: TouchControls,
     stats: FrameStats,
     resolution: Resolution,
     vsync: bool,
-    /// Shader-rendered hair (H toggles vector hair for comparison).
-    shader_hair: bool,
     last_frame: Instant,
 }
 
@@ -167,16 +162,8 @@ async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(Render
     let upscaler = wgpu::util::TextureBlitterBuilder::new(device, surface.format)
         .sample_type(wgpu::FilterMode::Linear)
         .build();
-    let mut renderer = Renderer::new(
-        device,
-        RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| format!("failed to create renderer: {e}"))?;
-    let hair = crate::hair::HairRenderer::new(device, &mut renderer);
-    Ok((context, RenderState { surface, window, renderer, target: None, upscaler, hair }))
+    let frame = FrameRenderer::new(device).map_err(|e| format!("failed to create renderer: {e}"))?;
+    Ok((context, RenderState { surface, window, frame, upscaler }))
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -246,7 +233,10 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::KeyX | KeyCode::KeyJ) => input.tongue = pressed,
                     PhysicalKey::Code(KeyCode::Escape) if !cfg!(target_arch = "wasm32") => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::KeyH) if pressed && !event.repeat => {
-                        self.shader_hair = !self.shader_hair;
+                        state.frame.shader_hair = !state.frame.shader_hair;
+                    }
+                    PhysicalKey::Code(KeyCode::KeyC) if pressed && !event.repeat => {
+                        self.game.weather.cycle_mode();
                     }
                     PhysicalKey::Code(KeyCode::KeyF) if pressed && !event.repeat => {
                         self.stats.visible = !self.stats.visible;
@@ -286,52 +276,27 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // With the `hotpatch` feature, code changes are patched into
                 // these calls while the game runs.
-                let (game, scene) = (&mut self.game, &mut self.scene);
+                let game = &mut self.game;
                 hot(|| game.update(dt));
-                scene.reset();
-                let hair_image = self.shader_hair.then(|| state.hair.image.clone());
-                let hair_frame = hot(|| game.draw(scene, width as f64, height as f64, hair_image.as_ref()));
-                // Touch controls are laid out in screen pixels.
-                let mut overlay = Scene::new();
-                self.touch.draw(&mut overlay);
-                scene.append(&overlay, Some(Affine::scale(scale)));
-                self.stats.draw(scene, width as f64, height as f64, self.vsync, scale);
-
+                let (touch, stats, vsync) = (&self.touch, &self.stats, self.vsync);
                 let handle = &context.devices[state.surface.dev_id];
-                if !matches!(&state.target, Some((w, h, _)) if *w == width && *h == height) {
-                    let texture = handle.device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("render target"),
-                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    state.target = Some((width, height, view));
-                }
-                // The hair pass renders first; Vello copies its texture in.
-                if let Some(frame) = &hair_frame {
-                    state.hair.render(&handle.device, &handle.queue, frame);
-                }
-                let target_view = &state.target.as_ref().expect("target was just created").2;
-                state
-                    .renderer
-                    .render_to_texture(
-                        &handle.device,
-                        &handle.queue,
-                        &self.scene,
-                        target_view,
-                        &vello::RenderParams {
-                            base_color: Color::from_rgb8(0x10, 0x12, 0x1c),
-                            width,
-                            height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("rendering failed");
+                let rendered = state.frame.render(&handle.device, &handle.queue, width, height, |layers, hair| {
+                    let info = hot(|| game.draw(layers, width as f64, height as f64, hair));
+                    // Touch controls are laid out in screen pixels.
+                    let mut overlay = Scene::new();
+                    touch.draw(&mut overlay);
+                    layers.front.append(&overlay, Some(Affine::scale(scale)));
+                    stats.draw(&mut layers.front, width as f64, height as f64, vsync, scale);
+                    info
+                });
+                let target_view = match rendered {
+                    Ok(view) => view,
+                    Err(err) => {
+                        show_error(&format!("rendering failed: {err}"));
+                        event_loop.exit();
+                        return;
+                    }
+                };
 
                 let frame = match state.surface.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(f) | CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -410,14 +375,12 @@ pub fn run() {
         context: Some(RenderContext::new()),
         state: None,
         proxy: event_loop.create_proxy(),
-        scene: Scene::new(),
         game: Game::new(),
         gamepads: Gamepads::new(),
         touch: TouchControls::default(),
         stats: FrameStats::default(),
         resolution: Resolution::initial(1.0),
         vsync: true,
-        shader_hair: true,
         last_frame: Instant::now(),
     };
     #[cfg(target_arch = "wasm32")]

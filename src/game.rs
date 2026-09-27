@@ -10,7 +10,9 @@ use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
 use crate::level::{self, Level};
 use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
+use crate::frame::{FrameInfo, Layers, Post};
 use crate::hair::HairFrame;
+use crate::weather::{self, Weather};
 use crate::rig::Skeleton;
 use vello::peniko::ImageData;
 
@@ -107,6 +109,7 @@ pub struct Game {
     squash_vel: f64,
     camera: DVec2,
     view_height: f64,
+    pub weather: Weather,
     /// Hair simulation: the tips' swing (a damped spring driven by his
     /// head's acceleration) and the hair's lagging facing when he turns.
     hair_swing: DVec2,
@@ -144,6 +147,7 @@ impl Game {
             squash_vel: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
             view_height: VIEW_HEIGHT,
+            weather: Weather::new(),
             hair_swing: DVec2::ZERO,
             hair_swing_vel: DVec2::ZERO,
             hair_facing: 1.0,
@@ -261,6 +265,7 @@ impl Game {
         let motion = self.motion();
         self.animator.update(dt, &motion);
         self.update_hair(dt);
+        self.weather.update(dt, self.time);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
         let speed = (self.player.vel.length() / 34.0).min(1.0);
@@ -378,35 +383,55 @@ impl Game {
 
     /// Draws a frame. With `hair_image`, Konrad's hair is shader-rendered and
     /// its strands are returned for the frontend's hair pass.
-    pub fn draw(&self, scene: &mut Scene, w: f64, h: f64, hair_image: Option<&ImageData>) -> Option<HairFrame> {
+    /// Draws a frame into the renderer's layers (see `frame`). With
+    /// `hair_image`, Konrad's hair is shader-rendered and its strands are
+    /// returned for the hair pass.
+    pub fn draw(&self, layers: &mut Layers, w: f64, h: f64, hair_image: Option<&ImageData>) -> FrameInfo {
         // In portrait, zoom out so there's still room to see ahead.
         let view_height = self.view_height.max(MIN_VIEW_WIDTH * h / w.max(1.0));
         let camera = Camera {
-            // The extra height in portrait goes mostly above Joe, not into the ground.
+            // The extra height in portrait goes mostly above him, not into the ground.
             eye: DVec3::new(self.camera.x, self.camera.y + (view_height - self.view_height) * 0.3, -CAMERA_DISTANCE),
             focal: h / view_height * CAMERA_DISTANCE,
             center: Point::new(w / 2.0, h / 2.0),
         };
-        crate::paint::set_view(w, h, h / view_height / 85.0);
+        // The background layers are rendered at half resolution.
+        let half = Camera { focal: camera.focal * 0.5, center: Point::new(w / 4.0, h / 4.0), ..camera };
+        let (rain, wind) = (self.weather.rain, self.weather.wind);
+        jungle::set_wind(wind);
         let skip = SKIP.load(std::sync::atomic::Ordering::Relaxed);
         if skip & SKIP_BACKGROUND == 0 {
-            jungle::draw_background(scene, &camera, w, h, self.time);
+            crate::paint::set_view(w / 2.0, h / 2.0, h / view_height / 170.0);
+            jungle::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
+            weather::draw_birds(&mut layers.far, &half, w / 2.0, h / 2.0, self.time, rain);
+            weather::draw_fog(&mut layers.mid, &half, w / 2.0, self.time, rain, wind);
+            let mut mid = Canvas3d::new(half);
+            weather::draw_leaves(&mut mid, w / 2.0, self.time, wind, (6.0, 14.0), 70);
+            mid.finish(&mut layers.mid);
         }
+        crate::paint::set_view(w, h, h / view_height / 85.0);
 
+        let scene = &mut layers.front;
+        if skip & SKIP_WORLD == 0 {
+            weather::draw_pit_mist(scene, &camera, w, h, rain);
+        }
         let mut canvas = Canvas3d::new(camera);
         if skip & SKIP_WORLD == 0 {
-        jungle::draw_world(
-            &mut canvas,
-            &self.level,
-            &WorldView {
-                time: self.time,
-                flies: &self.flies,
-                caught: &self.caught,
-                checkpoint: self.checkpoint,
-                hook_hint: self.hook_hint(),
-                screen_width: w,
-            },
-        );
+            jungle::draw_world(
+                &mut canvas,
+                &self.level,
+                &WorldView {
+                    time: self.time,
+                    flies: &self.flies,
+                    caught: &self.caught,
+                    checkpoint: self.checkpoint,
+                    hook_hint: self.hook_hint(),
+                    screen_width: w,
+                },
+            );
+            weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
+            weather::draw_fireflies(&mut canvas, w, self.time, rain);
+            weather::draw_rain(&mut canvas, &self.level, w, h, self.time, rain, wind);
         }
         let mut hair = None;
         if skip & SKIP_JOE == 0 {
@@ -423,9 +448,6 @@ impl Game {
         canvas.finish(scene);
 
         self.draw_hud(scene, w, h);
-        if skip & SKIP_GRADE == 0 {
-            crate::paint::grade(scene, w, h);
-        }
         if self.flash > 0.0 {
             scene.fill(
                 Fill::NonZero,
@@ -435,7 +457,32 @@ impl Game {
                 &Rect::new(0.0, 0.0, w, h),
             );
         }
-        hair
+        FrameInfo {
+            hair,
+            post: Post {
+                sun: [crate::paint::SUN.0 as f32, crate::paint::SUN.1 as f32],
+                rain: rain as f32,
+                rays: 1.0,
+                grade: skip & SKIP_GRADE == 0,
+            },
+        }
+    }
+
+    /// How much sunlight reaches `pos`: less under the tree canopies and
+    /// overhead platforms, and in the rain.
+    fn light_at(&self, pos: DVec2) -> f64 {
+        let mut light: f64 = 1.0;
+        for c in &self.level.climbables {
+            if c.kind == crate::level::ClimbKind::Trunk && (pos.x - c.x).abs() < 3.0 {
+                light = light.min(0.45 + 0.55 * ((pos.x - c.x).abs() / 3.0).powi(2));
+            }
+        }
+        for b in &self.level.blocks {
+            if b.y0 > pos.y + 1.0 && b.y0 < pos.y + 7.0 && pos.x > b.x0 - 0.3 && pos.x < b.x1 + 0.3 {
+                light = light.min(0.65);
+            }
+        }
+        light * (1.0 - 0.35 * self.weather.rain)
     }
 
     fn draw_joe(&self, canvas: &mut Canvas3d, hair_image: Option<&ImageData>) -> Option<HairFrame> {
@@ -477,8 +524,24 @@ impl Game {
                 (0.6, Color::from_rgb8(0x2e, 0x22, 0x4a).with_alpha(0.3 * fade as f32)),
                 (1.0, Color::from_rgb8(0x2e, 0x22, 0x4a).with_alpha(0.0)),
             ]);
+            // A long shadow cast away from the sun, fainter in the shade.
+            let light = self.light_at(p.pos);
+            let cast_center = DVec3::new(p.pos.x - 1.1 * fade, ground, 0.2);
+            let cast = canvas.project_ellipsoid(
+                cast_center,
+                DMat3::from_cols(DVec3::X * 1.5 * size, DVec3::Z * 0.3 * size, DVec3::Y * 1e-3),
+            );
+            let cast_shape = Affine::translate(cast.center().to_vec2())
+                * Affine::rotate(cast.rotation())
+                * Affine::scale_non_uniform(cast.radii().x, cast.radii().y);
+            let cast_alpha = (0.35 * fade * light * light) as f32;
+            let cast_fill = Gradient::new_radial((0.0, 0.0), 1.0).with_stops([
+                (0.0, Color::from_rgb8(0x14, 0x12, 0x2a).with_alpha(cast_alpha)),
+                (1.0, Color::from_rgb8(0x14, 0x12, 0x2a).with_alpha(0.0)),
+            ]);
             let depth = canvas.depth_of(DVec3::new(p.pos.x, ground, 0.6));
             canvas.push(depth, move |scene| {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &cast_fill, Some(cast_shape), &cast);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow, Some(shape), &ellipse);
             });
         }
@@ -494,6 +557,7 @@ impl Game {
             stride: p.stride,
             hair_swing: self.hair_swing,
             hair_facing: self.hair_facing,
+            light: self.light_at(p.pos),
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).

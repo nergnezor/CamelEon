@@ -1,15 +1,14 @@
 //! Watercolour look: translucent washes with uneven, wobbly edges, darker
-//! "wet edges" where pigment pools, broken sepia ink lines and a paper texture
-//! multiplied over the whole picture.
+//! "wet edges" where pigment pools and broken sepia ink lines (the lighting
+//! grade now happens in `frame`).
 //!
 //! Wobble is a noise field anchored to each object, so a shape keeps the same
 //! irregular edge from frame to frame while the camera moves.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::OnceLock;
 
-use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Rect, Stroke, Vec2};
-use vello::peniko::{Blob, BlendMode, Brush, Color, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
+use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Stroke, Vec2};
+use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
 
 /// Flat style (early-90s cinematic platformer): solid colour shapes with no
@@ -280,95 +279,6 @@ pub fn ink(scene: &mut Scene, path: &BezPath, size: f64, seed: u64, anchor: Poin
     let width = (size * 0.055).clamp(1.2, 4.0);
     let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
     scene.stroke(&stroke, Affine::IDENTITY, INK, None, &wobble(path, width * 0.25, seed ^ 0x99, anchor));
-}
-
-/// Cold-pressed watercolour paper: a tileable grain texture.
-fn paper_texture() -> &'static ImageData {
-    static PAPER: OnceLock<ImageData> = OnceLock::new();
-    PAPER.get_or_init(|| {
-        const N: usize = 256;
-        // Periodic value noise at a few scales, so the tile repeats seamlessly.
-        let lattice = |cells: usize, oct: u64| {
-            let mut grid = vec![0.0; cells * cells];
-            for (i, g) in grid.iter_mut().enumerate() {
-                *g = rand01(0xa11ce ^ oct, i as u64);
-            }
-            move |x: f64, y: f64| {
-                let fx = x * cells as f64;
-                let fy = y * cells as f64;
-                let (x0, y0) = (fx.floor() as usize % cells, fy.floor() as usize % cells);
-                let (x1, y1) = ((x0 + 1) % cells, (y0 + 1) % cells);
-                let (tx, ty) = (fx.fract(), fy.fract());
-                let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
-                let a = grid[y0 * cells + x0] + (grid[y0 * cells + x1] - grid[y0 * cells + x0]) * sx;
-                let b = grid[y1 * cells + x0] + (grid[y1 * cells + x1] - grid[y1 * cells + x0]) * sx;
-                a + (b - a) * sy
-            }
-        };
-        let octaves = [(lattice(8, 1), 0.35), (lattice(32, 2), 0.3), (lattice(64, 3), 0.2), (lattice(128, 4), 0.15)];
-        let mut data = Vec::with_capacity(N * N * 4);
-        for y in 0..N {
-            for x in 0..N {
-                let (u, v) = (x as f64 / N as f64, y as f64 / N as f64);
-                let n: f64 = octaves.iter().map(|(f, w)| f(u, v) * w).sum();
-                let speck = if rand01(0x5eed, (y * N + x) as u64) > 0.995 { 0.06 } else { 0.0 };
-                let k = 0.88 + 0.12 * n - speck;
-                let paper = [0.99, 0.965, 0.92];
-                for c in paper {
-                    data.push(((c * k).clamp(0.0, 1.0) * 255.0) as u8);
-                }
-                data.push(255);
-            }
-        }
-        ImageData {
-            data: Blob::from(data),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: N as u32,
-            height: N as u32,
-        }
-    })
-}
-
-/// Final grade over everything drawn so far: watercolour paper, sunlight
-/// falling off into cool violet dusk away from the sun, a soft vignette and a
-/// warm bloom around the sun.
-pub fn grade(scene: &mut Scene, w: f64, h: f64) {
-    let rect = Rect::new(0.0, 0.0, w, h);
-    let id = Affine::IDENTITY;
-    let sun = Point::new(w * SUN.0, h * SUN.1);
-
-    scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, id, &rect);
-    if detail() == 0 && !FLAT {
-        let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
-        scene.fill(Fill::NonZero, id, &paper, None, &rect);
-    }
-    let away = Point::new(w * (1.0 - SUN.0) - w * 0.3, h * 1.1);
-    let dusk = Gradient::new_linear(sun, away).with_stops([
-        (0.0, Color::from_rgb8(0xe6, 0xe0, 0xde)),
-        (0.4, Color::from_rgb8(0xcc, 0xbc, 0xc6)),
-        (1.0, Color::from_rgb8(0x68, 0x56, 0x84)),
-    ]);
-    scene.fill(Fill::NonZero, id, &dusk, None, &rect);
-    let vignette = Gradient::new_radial(Point::new(w / 2.0, h / 2.0), (w.max(h) * 0.75) as f32).with_stops([
-        (0.0, Color::WHITE),
-        (0.65, Color::WHITE),
-        (1.0, Color::from_rgb8(0xb8, 0xa4, 0xa8)),
-    ]);
-    scene.fill(Fill::NonZero, id, &vignette, None, &rect);
-    scene.pop_layer();
-
-    if detail() >= 2 || FLAT {
-        return;
-    }
-    scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Screen), 1.0, id, &rect);
-    let bloom = Gradient::new_radial(sun, (h * 0.75) as f32).with_stops([
-        (0.0, Color::from_rgb8(0xff, 0xc8, 0x90).with_alpha(0.45)),
-        (0.4, Color::from_rgb8(0xff, 0xb0, 0x90).with_alpha(0.15)),
-        (1.0, Color::from_rgb8(0xff, 0xb0, 0x90).with_alpha(0.0)),
-    ]);
-    scene.fill(Fill::NonZero, id, &bloom, None, &rect);
-    scene.pop_layer();
 }
 
 /// Cartoon cel painting for characters and props: a flat colour with a crisp
