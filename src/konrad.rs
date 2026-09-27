@@ -228,7 +228,8 @@ fn idle(m: &Motion) -> Pose {
 }
 
 /// A natural run: lean, full leg swing with the trailing knee folding up,
-/// arms swinging opposite with bent elbows, shoulders counter-rotating.
+/// arms pumping opposite with the hands at chest height, shoulders
+/// counter-rotating.
 fn run(m: &Motion) -> Pose {
     let mut p = Pose::rest(COUNT);
     let s = m.stride;
@@ -246,8 +247,10 @@ fn run(m: &Motion) -> Pose {
         let fold = (s + phase + 1.2).cos().max(0.0);
         p.rotate(hip, rx(-swing * 0.75 - 0.15));
         p.rotate(knee, rx(0.2 + 1.5 * fold));
-        p.rotate(shoulder, rx(swing * 0.7));
-        p.rotate(elbow, rx(-0.9 - 0.3 * swing.max(0.0)));
+        // Sprinter's arms: elbows tightly bent so the hands pump at chest
+        // height, forward and back.
+        p.rotate(shoulder, rx(swing * 0.6 - 0.25));
+        p.rotate(elbow, rx(-1.95 - 0.35 * swing.max(0.0)));
     }
     p
 }
