@@ -407,6 +407,9 @@ impl FrameRenderer {
         let info = draw(&mut self.layers, hair_image.as_ref());
         if let Some(frame) = &info.hair {
             self.hair.render(device, queue, frame);
+            // Vello caches images in its atlas; without this it keeps
+            // showing the first frame's strands.
+            self.renderer.mark_override_image_dirty(&self.hair.image);
         }
         self.targets(device, width, height);
         let t = self.targets.as_ref().expect("targets exist");

@@ -660,7 +660,6 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
     let head_px = cam.project(s.pos[HEAD]).scale * k;
     let mut head_parts = vec![
         Part::Fill(neck, SKIN),
-        Part::Fill(hair_mass(look, head_c, up, head_px), HAIR_DARK),
         Part::Fill(smooth_closed(&placed(&HEAD_SHAPE, head_c, fwd, up, head_px)), SKIN),
     ];
     let ear = Ellipse::new(head_c + (fwd * -0.02 + up * 0.005) * head_px, (0.018 * head_px, 0.028 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2);
@@ -674,7 +673,11 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
             head_parts.push(Part::Image(image.clone(), frame.transform()));
             hair_frame = Some(frame);
         }
-        None => head_parts.extend(hair_locks(look, head_c, hair_fwd, up, head_px)),
+        None => {
+            // The vector locks need a dark mass behind them to look full.
+            head_parts.insert(1, Part::Fill(hair_mass(look, head_c, up, head_px), HAIR_DARK));
+            head_parts.extend(hair_locks(look, head_c, hair_fwd, up, head_px));
+        }
     }
     // The ribbed collar wraps the bottom of the neck.
     head_parts.insert(1, Part::Fill(band(pt(s.at(CHEST, DVec3::new(0.0, 0.055, 0.0))), pt(s.at(CHEST, DVec3::new(0.0, 0.09, 0.01))), 0.105 * px), RIB));
@@ -848,18 +851,23 @@ fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -
         let curl = if fringe { -0.4 - rand(i, 3) * 0.35 } else { 0.1 + rand(i, 3) * 0.6 };
         let reach = if fringe { 1.2 + rand(i, 4) * 0.3 } else { 1.5 + rand(i, 4) * 0.85 } * (0.85 + 0.15 * layer);
         // Each strand sways on its own, more in the wind, with a faster
-        // flutter towards the tip.
-        let wobble = (look.time * 2.1 + i as f64 * 0.37).sin() * (0.03 + 0.1 * look.wind);
-        let flutter = |t: f64| (look.time * 7.0 + i as f64 * 1.9 + t * 3.0).sin() * (0.01 + 0.035 * look.wind) * t * t;
+        // flutter towards the tip. Offsets are in head units.
+        let (phase, gain) = (i as f64 * 0.37, 0.035 + 0.09 * look.wind);
+        let sway = (
+            (look.time * 2.1 + phase).sin() * gain,
+            (look.time * 1.6 + phase * 1.7).cos() * gain * 0.5,
+        );
+        let flutter = |t: f64| (look.time * 7.0 + i as f64 * 1.9 + t * 3.0).sin() * (0.012 + 0.03 * look.wind) * t * t;
         // Each strand follows the simulated swing a bit differently.
         let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px * (0.7 + 0.6 * rand(i, 9));
         let points: Vec<Point> = (0..8)
             .map(|j| {
                 let t = j as f64 / 7.0;
-                let a = root + (curl + wobble) * t + flutter(t);
+                let a = root + curl * t;
                 let r = 0.95 + (reach - 0.95) * (1.0 - (1.0 - t) * (1.0 - t));
                 let (x, y) = on_head(a, r);
-                at(x + trail * t * t, y + (bounce - 0.02) * t * t) + swing * (t * t)
+                let (sx, sy) = (sway.0 * t * t + flutter(t) * a.sin(), sway.1 * t * t - flutter(t) * a.cos());
+                at(x + trail * t * t + sx, y + (bounce - 0.02) * t * t + sy) + swing * (t * t)
             })
             .collect();
         let shade = 0.55 + 0.45 * layer + (rand(i, 5) - 0.5) * 0.2;

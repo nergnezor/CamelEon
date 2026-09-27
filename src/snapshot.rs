@@ -85,6 +85,10 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
     drop(layers);
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
+    // Render a fresh game first, like the window's earlier frames, so stale
+    // GPU caches (e.g. the hair image in Vello's atlas) show up here too.
+    let fresh = Game::new();
+    renderer.render(device, queue, width, height, |layers, hair| fresh.draw(layers, width as f64, height as f64, hair))?;
     renderer.render(device, queue, width, height, |layers, hair| game.draw(layers, width as f64, height as f64, hair))?;
     let rgba = renderer.read_pixels(device, queue)?;
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
