@@ -37,13 +37,11 @@ M mutes the sound.
 
 Controls:
   ← → / A D     run
-  ↑ ↓ / W S     climb (and shorten/lengthen the tongue while swinging)
-  Space / Z     jump (let go while swinging)
-  X / J         tongue: catch flies, grab flowers to swing
+  Space / Z / ↑ jump: hold to crouch deeper and leap higher
+  Run or jump into the flies to catch them.
   Esc (or q in the terminal) quits.
 
-Gamepad: left stick or d-pad to move and climb, A/Cross to jump,
-X/Square, B/Circle or right trigger for the tongue.";
+Gamepad: left stick or d-pad to run, A/Cross to jump.";
 
 fn main() {
     #[cfg(target_arch = "wasm32")]

@@ -2,7 +2,7 @@
 //! last frame as a PPM image. Useful for testing moves and taking screenshots.
 //!
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
-//! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
+//! L R J (left, right, jump) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
 //! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
 //! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
@@ -54,10 +54,7 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         let secs: f64 = secs.parse()?;
         game.input.left = keys.contains('L');
         game.input.right = keys.contains('R');
-        game.input.up = keys.contains('U');
-        game.input.down = keys.contains('D');
         game.input.jump = keys.contains('J');
-        game.input.tongue = keys.contains('T');
         let frames = (secs * 60.0).round() as usize;
         for _ in 0..frames {
             game.update(1.0 / 60.0);

@@ -1,8 +1,8 @@
 //! Drawing the jungle: sky, fogged background layers, platforms as 3D boxes,
-//! vines, trees, swing flowers, flies, checkpoints, the goal and foreground
+//! trees, flies, checkpoints, the goal and foreground
 //! foliage.
 
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::PI;
 
 use glam::{DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Circle, Ellipse, Point, Rect, Shape, Stroke, Vec2};
@@ -11,7 +11,7 @@ use vello::Scene;
 
 use crate::canvas3d::{darken, lighten, mix, Camera, Canvas3d, OUTLINE};
 use crate::paint::{self, wash};
-use crate::level::{Block, BlockKind, ClimbKind, Level};
+use crate::level::{Block, BlockKind, Level};
 
 const SKY_TOP: Color = Color::from_rgb8(0x16, 0x22, 0x3c);
 const SKY_HORIZON: Color = Color::from_rgb8(0x5a, 0x7a, 0x8e);
@@ -61,7 +61,7 @@ const LAYERS: [Layer; 4] = [
 ];
 
 /// Sky and background layers, drawn straight into the scene (always behind).
-/// Wind strength, 0 calm .. 1 gusty: sways trees, ferns and vines. Set once
+/// Wind strength, 0 calm .. 1 gusty: sways trees, ferns and grass. Set once
 /// per frame by the game from the weather.
 static WIND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x3FE0_0000_0000_0000); // 0.5
 
@@ -212,8 +212,6 @@ pub struct WorldView<'a> {
     pub flies: &'a [DVec2],
     pub caught: &'a [bool],
     pub checkpoint: usize,
-    /// The hook the tongue would grab right now, if any.
-    pub hook_hint: Option<usize>,
     pub screen_width: f64,
     /// Konrad's feet, and whether he's on the ground: grass bends around him.
     pub player: DVec2,
@@ -231,14 +229,8 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
         }
         draw_block(canvas, b, (vx0, vx1), view);
     }
-    for c in &level.climbables {
-        match c.kind {
-            ClimbKind::Vine => draw_vine(canvas, c.x, c.y0, c.y1 + 14.0, view.time),
-            ClimbKind::Trunk => draw_trunk(canvas, c.x, c.y1),
-        }
-    }
-    for (i, &h) in level.hooks.iter().enumerate() {
-        draw_hook(canvas, h, view.time, view.hook_hint == Some(i));
+    for t in &level.trees {
+        draw_trunk(canvas, t.x, t.y);
     }
     for (i, &f) in view.flies.iter().enumerate() {
         if !view.caught[i] {
@@ -602,45 +594,6 @@ fn draw_tufts(canvas: &mut Canvas3d, b: &Block, top: Color, visible: (f64, f64),
     }
 }
 
-fn draw_vine(canvas: &mut Canvas3d, x: f64, y0: f64, y1: f64, time: f64) {
-    let cam = canvas.camera;
-    let z = 0.45;
-    let sway = |y: f64| (y * 1.3 + time * 1.5).sin() * 0.06 * (0.4 + wind()) + (y1 - y) * 0.01 * wind();
-    let mut stem = BezPath::new();
-    let n = ((y1 - y0) / 0.4).ceil() as usize;
-    for i in 0..=n {
-        let y = y0 + (y1 - y0) * i as f64 / n as f64;
-        let pt = cam.point(DVec3::new(x + sway(y), y, z));
-        if i == 0 { stem.move_to(pt) } else { stem.line_to(pt) }
-    }
-    let mut leaves = Vec::new();
-    let mut y = y0 + 0.3;
-    let mut side = 1.0;
-    while y < y1 {
-        let base = DVec3::new(x + sway(y), y, z);
-        let pr = cam.project(base);
-        let r = 0.2 * pr.scale;
-        let angle = if side > 0.0 { -0.5 } else { PI + 0.5 };
-        let c = pr.pos + Vec2::new(angle.cos(), angle.sin()) * r;
-        leaves.push(Ellipse::new(c, (r, r * 0.45), angle));
-        y += 0.55;
-        side = -side;
-    }
-    let pr = cam.project(DVec3::new(x, (y0 + y1) / 2.0, z));
-    let anchor = cam.point(DVec3::new(x, y0, z));
-    canvas.push(pr.depth, move |scene| {
-        let w = 0.09 * pr.scale;
-        let stem = paint::wobble(&stem, w * 0.3, 5, anchor);
-        scene.stroke(&Stroke::new(w), Affine::IDENTITY, Color::from_rgb8(0x5e, 0x86, 0x3a).with_alpha(0.85), None, &stem);
-        scene.stroke(&Stroke::new(1.2), Affine::IDENTITY, OUTLINE.with_alpha(0.5), None, &stem);
-        for (i, leaf) in leaves.iter().enumerate() {
-            let path = leaf.to_path(0.1);
-            wash(scene, &path, LEAF, None, leaf.radii().x * 2.0, i as u64, leaf.center());
-            paint::ink(scene, &path, leaf.radii().x * 2.0, i as u64, leaf.center());
-        }
-    });
-}
-
 fn draw_trunk(canvas: &mut Canvas3d, x: f64, top: f64) {
     let cam = canvas.camera;
     let z = 1.1;
@@ -750,47 +703,12 @@ fn draw_trunk_base(canvas: &mut Canvas3d, x: f64, z: f64, r: f64) {
     });
 }
 
-fn draw_hook(canvas: &mut Canvas3d, h: DVec2, time: f64, hint: bool) {
-    let cam = canvas.camera;
-    let center = DVec3::new(h.x, h.y, 0.0);
-    let pr = cam.project(center);
-    let stem_top = cam.point(DVec3::new(h.x + 0.2, h.y + 9.0, 0.05));
-    let s = pr.scale;
-    let spin = time * 0.6;
-    let pulse = if hint { 1.0 + (time * 8.0).sin() * 0.12 } else { 1.0 };
-    canvas.push(pr.depth, move |scene| {
-        let mut stem = BezPath::new();
-        stem.move_to(stem_top);
-        stem.quad_to(pr.pos + Vec2::new(0.4 * s, -3.0 * s), pr.pos);
-        scene.stroke(&Stroke::new(0.07 * s), Affine::IDENTITY, Color::from_rgb8(0x5e, 0x86, 0x3a).with_alpha(0.85), None, &stem);
-        scene.stroke(&Stroke::new(1.2), Affine::IDENTITY, OUTLINE.with_alpha(0.5), None, &stem);
-        if hint {
-            let glow = Gradient::new_radial(pr.pos, (0.9 * s) as f32).with_stops([
-                Color::from_rgb8(0xff, 0xf0, 0x80).with_alpha(0.7),
-                Color::from_rgb8(0xff, 0xf0, 0x80).with_alpha(0.0),
-            ]);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, &glow, None, &Circle::new(pr.pos, 0.9 * s));
-        }
-        for k in 0..5 {
-            let a = spin + k as f64 * TAU / 5.0;
-            let c = pr.pos + Vec2::new(a.cos(), a.sin()) * 0.22 * s * pulse;
-            let petal = Ellipse::new(c, (0.2 * s * pulse, 0.11 * s * pulse), a);
-            let petal = petal.to_path(0.1);
-            wash(scene, &petal, Color::from_rgb8(0xe0, 0x5f, 0x9e), None, 0.4 * s, k as u64, pr.pos);
-            paint::ink(scene, &petal, 0.4 * s, k as u64, pr.pos);
-        }
-        let bud = Circle::new(pr.pos, 0.12 * s);
-        wash(scene, &bud.to_path(0.1), Color::from_rgb8(0xf6, 0xd0, 0x4a), None, 0.24 * s, 9, pr.pos);
-    });
-}
-
 /// Where fly `i` is right now: buzzing around its home.
 pub fn fly_position(home: DVec2, time: f64, i: usize) -> DVec2 {
     let f = i as f64 * 1.37;
     home + DVec2::new((time * 1.9 + f).sin() * 0.35, (time * 2.7 + f * 2.0).cos() * 0.22)
 }
 
-/// A collectible energy cell: a small glowing crystal that pulses.
 fn draw_fly(canvas: &mut Canvas3d, pos: DVec2, time: f64, i: usize) {
     let cam = canvas.camera;
     let pr = cam.project(DVec3::new(pos.x, pos.y, -0.05));

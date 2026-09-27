@@ -1,6 +1,6 @@
 //! On-screen touch controls for phones and tablets: a floating analog stick
 //! on the left half of the screen (it appears where the thumb lands) and
-//! jump/tongue buttons on the right.
+//! a jump button on the right (anywhere on the right half jumps).
 
 use vello::kurbo::{Affine, BezPath, Circle, Point, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
@@ -19,7 +19,6 @@ struct Stick {
 pub struct TouchControls {
     stick: Option<Stick>,
     jump: Option<u64>,
-    tongue: Option<u64>,
     /// The overlay only shows once the screen has been touched.
     used: bool,
     size: (f64, f64),
@@ -35,30 +34,19 @@ impl TouchControls {
         Point::new(self.size.0 - r * 1.5, self.size.1 - r * 1.6)
     }
 
-    fn tongue_button(&self) -> Point {
-        let r = self.radius();
-        Point::new(self.size.0 - r * 4.0, self.size.1 - r * 1.1)
-    }
-
     pub fn resize(&mut self, w: f64, h: f64) {
         self.size = (w, h);
     }
 
     pub fn event(&mut self, id: u64, phase: TouchPhase, pos: Point) {
         self.used = true;
-        let r = self.radius();
         match phase {
             TouchPhase::Started => {
                 if pos.x < self.size.0 * 0.5 {
                     if self.stick.is_none() {
                         self.stick = Some(Stick { id, origin: pos, pos });
                     }
-                } else if (pos - self.jump_button()).hypot() < r * 1.5 {
-                    self.jump = Some(id);
-                } else if (pos - self.tongue_button()).hypot() < r * 1.5 {
-                    self.tongue = Some(id);
                 } else {
-                    // Anywhere else on the right half jumps too.
                     self.jump = Some(id);
                 }
             }
@@ -76,9 +64,6 @@ impl TouchControls {
                 if self.jump == Some(id) {
                     self.jump = None;
                 }
-                if self.tongue == Some(id) {
-                    self.tongue = None;
-                }
             }
         }
     }
@@ -86,7 +71,6 @@ impl TouchControls {
     pub fn input(&self) -> Input {
         let mut input = Input {
             jump: self.jump.is_some(),
-            tongue: self.tongue.is_some(),
             ..Input::default()
         };
         if let Some(stick) = &self.stick {
@@ -95,7 +79,6 @@ impl TouchControls {
             // A small deadzone so resting the thumb doesn't creep.
             if d.hypot() > 0.12 {
                 input.stick_x = d.x;
-                input.stick_y = -d.y;
             }
         }
         input
@@ -134,15 +117,5 @@ impl TouchControls {
         arrow.line_to(j + Vec2::new(0.0, -r * 0.3));
         arrow.line_to(j + Vec2::new(r * 0.35, r * 0.15));
         scene.stroke(&Stroke::new(r * 0.12), id, ink.with_alpha(0.75), None, &arrow);
-
-        // Tongue: a curl ending in a sticky dot.
-        let t = self.tongue_button();
-        ring(scene, t, r * 0.8, self.tongue.is_some());
-        let mut curl = BezPath::new();
-        curl.move_to(t + Vec2::new(-r * 0.35, r * 0.2));
-        curl.quad_to(t + Vec2::new(0.0, -r * 0.5), t + Vec2::new(r * 0.3, -r * 0.05));
-        let tongue = Color::from_rgb8(0xe8, 0x5f, 0x8a);
-        scene.stroke(&Stroke::new(r * 0.14), id, tongue, None, &curl);
-        scene.fill(Fill::NonZero, id, tongue, None, &Circle::new(t + Vec2::new(r * 0.3, -r * 0.05), r * 0.13));
     }
 }

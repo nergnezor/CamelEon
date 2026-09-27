@@ -1,6 +1,6 @@
 //! Game state and the frame loop shared by the window and terminal frontends.
 
-use glam::{DMat3, DQuat, DVec2, DVec3};
+use glam::{DMat3, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
@@ -10,7 +10,7 @@ use crate::konrad::{self as hero, Animator, Look, Motion};
 use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
 use crate::level::{self, Level};
-use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
+use crate::player::{Controls, Player};
 use crate::frame::{FrameInfo, Layers, Post};
 use crate::hair::{HairFrame, HairStyle};
 use crate::weather::{self, Weather};
@@ -33,9 +33,6 @@ const VIEW_HEIGHT_FAST: f64 = 16.0;
 /// World units always visible across the screen (matters in portrait).
 const MIN_VIEW_WIDTH: f64 = 10.0;
 const MAX_STEP: f64 = 1.0 / 120.0;
-/// The grappling line and its hook.
-const CABLE: Color = Color::from_rgb8(0x2a, 0x2e, 0x36);
-const HOOK: Color = Color::from_rgb8(0x9a, 0xa4, 0xb0);
 /// Camouflage colours (ground, blotches): the jungle behind him, or bark
 /// in front of a tree trunk.
 const CAMO_LEAVES: (Color, Color) = (Color::from_rgb8(0x1c, 0x3e, 0x30), Color::from_rgb8(0x3a, 0x6a, 0x3e));
@@ -51,13 +48,9 @@ const CAMO_OFF: f64 = 0.3;
 pub struct Input {
     pub left: bool,
     pub right: bool,
-    pub up: bool,
-    pub down: bool,
     pub jump: bool,
-    pub tongue: bool,
-    /// Analog stick, −1..1 (x right, y up); zero when no stick is used.
+    /// Analog stick, −1..1 (right is positive); zero when no stick is used.
     pub stick_x: f64,
-    pub stick_y: f64,
 }
 
 impl Input {
@@ -68,23 +61,15 @@ impl Input {
         Input {
             left: a.left || b.left,
             right: a.right || b.right,
-            up: a.up || b.up,
-            down: a.down || b.down,
             jump: a.jump || b.jump,
-            tongue: a.tongue || b.tongue,
             stick_x: pick(a.stick_x, b.stick_x),
-            stick_y: pick(a.stick_y, b.stick_y),
         }
     }
 
-    /// Horizontal and vertical axes: the stick if it's pushed, else the keys.
-    fn axes(&self) -> (f64, f64) {
-        let keys = |neg: bool, pos: bool| pos as i32 as f64 - neg as i32 as f64;
-        let pick = |stick: f64, key: f64| if stick.abs() > key.abs() { stick } else { key };
-        (
-            pick(self.stick_x, keys(self.left, self.right)),
-            pick(self.stick_y, keys(self.down, self.up)),
-        )
+    /// The horizontal axis: the stick if it's pushed, else the keys.
+    fn axis(&self) -> f64 {
+        let keys = self.right as i32 as f64 - self.left as i32 as f64;
+        if self.stick_x.abs() > keys.abs() { self.stick_x } else { keys }
     }
 }
 
@@ -104,7 +89,6 @@ pub struct Game {
     /// Gamepad state, set by the frontend.
     pub pad: Input,
     prev_jump: bool,
-    prev_tongue: bool,
     level: Level,
     player: Player,
     fly_homes: Vec<DVec2>,
@@ -113,9 +97,8 @@ pub struct Game {
     checkpoint: usize,
     skeleton: Skeleton,
     animator: Animator,
-    /// Smoothed facing (−1..1) and "facing into the screen" (0..1) for turning.
+    /// Smoothed facing (−1..1), so he turns round through the camera.
     turn: f64,
-    away: f64,
     squash: f64,
     squash_vel: f64,
     camera: DVec2,
@@ -156,7 +139,6 @@ impl Game {
             input: Input::default(),
             pad: Input::default(),
             prev_jump: false,
-            prev_tongue: false,
             player: Player::new(start),
             flies: fly_homes.clone(),
             caught: vec![false; fly_homes.len()],
@@ -166,7 +148,6 @@ impl Game {
             skeleton: hero::skeleton(),
             animator: Animator::default(),
             turn: 1.0,
-            away: 0.0,
             squash: 0.0,
             squash_vel: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
@@ -203,28 +184,14 @@ impl Game {
     fn step(&mut self, dt: f64) {
         self.time += dt;
         let (k, p) = (self.input, self.pad);
-        let (kx, ky) = k.axes();
-        let (px, py) = p.axes();
-        let pick = |a: f64, b: f64| if a.abs() > b.abs() { a } else { b };
-        let (x, y) = (pick(kx, px), pick(ky, py));
-        let input = Input {
-            up: y > 0.3,
-            down: y < -0.3,
-            jump: k.jump || p.jump,
-            tongue: k.tongue || p.tongue,
-            ..Input::default()
-        };
+        let (kx, px) = (k.axis(), p.axis());
+        let jump = k.jump || p.jump;
         let mut controls = Controls {
-            x,
-            y,
-            up: input.up,
-            down: input.down,
-            jump: input.jump,
-            jump_pressed: input.jump && !self.prev_jump,
-            tongue_pressed: input.tongue && !self.prev_tongue,
+            x: if kx.abs() > px.abs() { kx } else { px },
+            jump,
+            jump_pressed: jump && !self.prev_jump,
         };
-        self.prev_jump = input.jump;
-        self.prev_tongue = input.tongue;
+        self.prev_jump = jump;
 
         for (i, home) in self.fly_homes.iter().enumerate() {
             self.flies[i] = jungle::fly_position(*home, self.time, i);
@@ -245,10 +212,8 @@ impl Game {
             };
         }
 
-        let had_tongue = self.player.tongue.is_some();
-        let was_swinging = matches!(self.player.state, State::Swinging { .. });
         let events = self.player.update(dt, &controls, &self.level, &self.flies, &self.caught);
-        self.step_sounds(had_tongue, was_swinging);
+        self.step_sounds();
         if let Some(i) = events.caught_fly {
             self.sounds.push(Sfx::Gulp);
             self.caught[i] = true;
@@ -302,9 +267,6 @@ impl Game {
         // Turning: facing changes swing Joe round through the camera.
         let k = 1.0 - (-dt * 10.0).exp();
         self.turn += (self.player.facing - self.turn) * k;
-        let climbing = matches!(self.player.state, State::Climbing(_));
-        self.away += (climbing as u8 as f64 - self.away) * k;
-
 
         let motion = self.motion();
         self.animator.update(dt, &motion);
@@ -339,31 +301,20 @@ impl Game {
         self.update_effects(dt);
     }
 
-    /// Sounds that follow from his movement: footfalls, climbing, and the
-    /// grappling line going out and catching.
-    fn step_sounds(&mut self, had_tongue: bool, was_swinging: bool) {
+    /// Footfalls: a sound, and dust kicked up at speed.
+    fn step_sounds(&mut self) {
         let p = &self.player;
-        if p.tongue.is_some() && !had_tongue {
-            self.sounds.push(Sfx::Tongue);
-        }
-        if matches!(p.state, State::Swinging { .. }) && !was_swinging {
-            self.sounds.push(Sfx::Grab);
-        }
         // A foot lands twice per run cycle, just after each leg's forward
         // swing (see `konrad::run`).
         let footfall = ((p.stride - 2.0) / std::f64::consts::PI).floor() as i64;
         if footfall != self.footfall {
             self.footfall = footfall;
-            match p.state {
-                State::Normal if p.on_ground && p.vel.x.abs() > 1.0 => {
-                    self.sounds.push(Sfx::Step { speed: (p.vel.x.abs() / 30.0).min(1.0) as f32 });
-                    if p.vel.x.abs() > 10.0 {
-                        let (feet, vx) = (DVec3::new(p.pos.x, p.pos.y + 0.05, 0.1), p.vel.x);
-                        self.kick_up(feet, vx);
-                    }
+            if p.on_ground && p.vel.x.abs() > 1.0 {
+                self.sounds.push(Sfx::Step { speed: (p.vel.x.abs() / 30.0).min(1.0) as f32 });
+                if p.vel.x.abs() > 10.0 {
+                    let (feet, vx) = (DVec3::new(p.pos.x, p.pos.y + 0.05, 0.1), p.vel.x);
+                    self.kick_up(feet, vx);
                 }
-                State::Climbing(_) if p.vel.y.abs() > 0.5 => self.sounds.push(Sfx::Climb),
-                _ => {}
             }
         }
     }
@@ -372,7 +323,7 @@ impl Game {
     /// moving drops the camouflage at once.
     fn update_camo(&mut self, dt: f64) {
         let p = &self.player;
-        let hiding = p.on_ground && matches!(p.state, State::Normal) && p.idle > CAMO_DELAY;
+        let hiding = p.on_ground && p.idle > CAMO_DELAY;
         if hiding && self.camo == 0.0 {
             self.sounds.push(Sfx::Camo);
         }
@@ -383,9 +334,7 @@ impl Game {
     /// otherwise the leaves.
     fn camo_colors(&self) -> (Color, Color) {
         let p = self.player.pos;
-        let trunk = self.level.climbables.iter().any(|c| {
-            c.kind == crate::level::ClimbKind::Trunk && (p.x - c.x).abs() < c.half_width + 0.4 && p.y + 1.0 > c.y0 && p.y < c.y1
-        });
+        let trunk = self.level.trees.iter().any(|t| (p.x - t.x).abs() < 1.0 && p.y < t.y);
         if trunk { CAMO_BARK } else { CAMO_LEAVES }
     }
 
@@ -494,31 +443,11 @@ impl Game {
             stride: p.stride,
             run: (p.vel.x.abs() / 14.0).min(1.0),
             vel: DVec3::new(p.vel.x, p.vel.y, 0.0),
-            heading: hero::heading(self.turn, self.away),
+            heading: hero::heading(self.turn),
             airborne: !p.on_ground,
             crouch: p.crouch(),
             breath: self.breath(),
-            climbing: matches!(p.state, State::Climbing(_)),
-            swinging: matches!(p.state, State::Swinging { .. }),
-            grappling: p.tongue.is_some(),
-            aim: p
-                .tongue
-                .map(|t| DVec3::new(t.tip.x - p.pos.x, t.tip.y - p.pos.y - 1.55, 0.0))
-                .unwrap_or(DVec3::Y),
         }
-    }
-
-    /// The hook the tongue would grab, for highlighting.
-    fn hook_hint(&self) -> Option<usize> {
-        if let Some(t) = &self.player.tongue {
-            if let TongueTarget::Hook(i) = t.target {
-                return Some(i);
-            }
-        }
-        let mouth = self.player.mouth();
-        self.level.hooks.iter().position(|h| {
-            h.y > mouth.y + 0.5 && h.distance(mouth) < 7.5 && (h.x - mouth.x) * self.player.facing > -1.0
-        })
     }
 
     /// Moves Joe to a checkpoint, for the snapshot tool.
@@ -534,12 +463,7 @@ impl Game {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn status(&self) -> String {
         let p = &self.player;
-        let state = match p.state {
-            State::Normal if p.on_ground => "ground".to_string(),
-            State::Normal => "air".to_string(),
-            State::Climbing(i) => format!("climbing {i}"),
-            State::Swinging { hook, length } => format!("swinging {hook} len {length:.1}"),
-        };
+        let state = if p.on_ground { "ground" } else { "air" };
         let caught = self.caught.iter().filter(|c| **c).count();
         format!("pos ({:.2}, {:.2}) vel ({:.1}, {:.1}) {state} flies {caught} checkpoint {}", p.pos.x, p.pos.y, p.vel.x, p.vel.y, self.checkpoint)
     }
@@ -588,7 +512,6 @@ impl Game {
                     flies: &self.flies,
                     caught: &self.caught,
                     checkpoint: self.checkpoint,
-                    hook_hint: self.hook_hint(),
                     screen_width: w,
                     player: self.player.pos,
                     grounded: self.player.on_ground,
@@ -651,9 +574,9 @@ impl Game {
     /// overhead platforms, and in the rain.
     fn light_at(&self, pos: DVec2) -> f64 {
         let mut light: f64 = 1.0;
-        for c in &self.level.climbables {
-            if c.kind == crate::level::ClimbKind::Trunk && (pos.x - c.x).abs() < 3.0 {
-                light = light.min(0.45 + 0.55 * ((pos.x - c.x).abs() / 3.0).powi(2));
+        for t in &self.level.trees {
+            if (pos.x - t.x).abs() < 3.0 {
+                light = light.min(0.45 + 0.55 * ((pos.x - t.x).abs() / 3.0).powi(2));
             }
         }
         for b in &self.level.blocks {
@@ -668,16 +591,8 @@ impl Game {
         let motion = self.motion();
         let pose = self.animator.pose(&motion);
         let p = &self.player;
-        let mut rot = motion.heading;
-        let mut feet = DVec3::new(p.pos.x, p.pos.y, 0.0);
-        if let State::Swinging { hook, .. } = p.state {
-            // Hang from the mouth, tilted towards the hook.
-            let mouth = p.mouth();
-            let d = self.level.hooks[hook] - mouth;
-            let tilt = DQuat::from_rotation_z(-d.x.atan2(d.y));
-            rot = tilt * rot;
-            feet = DVec3::new(mouth.x, mouth.y, 0.0) - tilt * DVec3::new(0.0, MOUTH_HEIGHT, 0.0);
-        }
+        let rot = motion.heading;
+        let feet = DVec3::new(p.pos.x, p.pos.y, 0.0);
         // A soft violet contact shadow on the ground below, shrinking and
         // fading as Joe gets higher.
         let ground = self
@@ -728,7 +643,7 @@ impl Game {
         // Cartoon speed stretch: the faster Joe goes, the longer and thinner.
         let stretch = ((p.vel.x.abs() - 12.0) / 22.0).clamp(0.0, 1.0) * 0.7;
         let root = hero::root(feet, rot, self.squash, stretch);
-        let standing = p.on_ground && matches!(p.state, State::Normal);
+        let standing = p.on_ground;
         let solved = hero::plant(&self.skeleton, &pose, root, standing);
         let look = Look {
             time: self.time,
@@ -746,34 +661,9 @@ impl Game {
         // (no outline: the flat, outline-free style of the era).
         let hero_depth = canvas.depth_of(DVec3::new(p.pos.x, p.pos.y, 0.0));
         let mut figure = Canvas3d::group(canvas.camera, 0.0);
-        let anchors = hero::draw(&mut figure, &solved, &look, hair_style);
+        let hair = hero::draw(&mut figure, &solved, &look, hair_style);
         canvas.push(hero_depth, figure.into_group());
-
-        if let Some(t) = &p.tongue {
-            // The grappling line: a thin cable from his hand, sagging a
-            // little, with a metal hook at the end.
-            let cam = canvas.camera;
-            let a = cam.project(anchors.hand);
-            let b = cam.project(DVec3::new(t.tip.x, t.tip.y, 0.0));
-            let sag = if matches!(p.state, State::Swinging { .. }) { 0.0 } else { 0.06 };
-            let mid = a.pos.midpoint(b.pos) + Vec2::new(0.0, (a.pos - b.pos).hypot() * sag);
-            let width = (0.025 * a.scale).max(1.2);
-            let hook = 0.09 * b.scale;
-            canvas.push(a.depth - 0.05, move |scene| {
-                let mut path = BezPath::new();
-                path.move_to(a.pos);
-                path.quad_to(mid, b.pos);
-                scene.stroke(&Stroke::new(width), Affine::IDENTITY, CABLE, None, &path);
-                let dir = (b.pos - mid).normalize();
-                let side = Vec2::new(-dir.y, dir.x);
-                let mut claw = BezPath::new();
-                claw.move_to(b.pos - dir * hook + side * hook * 0.7);
-                claw.line_to(b.pos + dir * hook * 0.4);
-                claw.line_to(b.pos - dir * hook - side * hook * 0.7);
-                scene.stroke(&Stroke::new(width * 1.6).with_caps(vello::kurbo::Cap::Round), Affine::IDENTITY, HOOK, None, &claw);
-            });
-        }
-        anchors.hair
+        hair
     }
 
     fn draw_hud(&self, scene: &mut Scene, w: f64, h: f64) {
