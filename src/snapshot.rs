@@ -4,7 +4,8 @@
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
-//! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`.
+//! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
+//! `CAMEL_EON_HAIR=vector`.
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::peniko::Color;
@@ -69,6 +70,9 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         })
         .unwrap_or(DEFAULT_SIZE);
     let target = Target::new(device, width, height);
+    // Shader hair unless `CAMEL_EON_HAIR=vector`.
+    let hair = (std::env::var("CAMEL_EON_HAIR").as_deref() != Ok("vector"))
+        .then(|| crate::hair::HairRenderer::new(device, &mut renderer));
     if std::env::var("CAMEL_EON_GPU_BENCH").is_ok() {
         gpu_bench(&mut game, &mut renderer, device, queue, &target, width, height)?;
     }
@@ -78,9 +82,13 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     let start = web_time::Instant::now();
     for _ in 0..runs {
         scene.reset();
-        game.draw(&mut scene, width as f64, height as f64);
+        game.draw(&mut scene, width as f64, height as f64, hair.as_ref().map(|h| &h.image));
     }
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
+    scene.reset();
+    if let Some(frame) = game.draw(&mut scene, width as f64, height as f64, hair.as_ref().map(|h| &h.image)) {
+        hair.as_ref().expect("hair frames only come with a hair renderer").render(device, queue, &frame);
+    }
     renderer.render_to_texture(
         device,
         queue,
@@ -125,7 +133,7 @@ fn gpu_bench(
     for (name, skip) in variants {
         SKIP.store(skip, Ordering::Relaxed);
         scene.reset();
-        game.draw(&mut scene, width as f64, height as f64);
+        game.draw(&mut scene, width as f64, height as f64, None);
         let params = vello::RenderParams {
             base_color: Color::BLACK,
             width,

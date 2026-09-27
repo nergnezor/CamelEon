@@ -28,6 +28,7 @@ struct RenderState {
     /// scaled up onto the screen with linear filtering.
     target: Option<(u32, u32, wgpu::TextureView)>,
     upscaler: wgpu::util::TextureBlitter,
+    hair: crate::hair::HairRenderer,
 }
 
 /// Keeps the game at 60 FPS on slow devices. If frames are slow and the CPU
@@ -149,6 +150,8 @@ struct App {
     stats: FrameStats,
     resolution: Resolution,
     vsync: bool,
+    /// Shader-rendered hair (H toggles vector hair for comparison).
+    shader_hair: bool,
     last_frame: Instant,
 }
 
@@ -164,7 +167,7 @@ async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(Render
     let upscaler = wgpu::util::TextureBlitterBuilder::new(device, surface.format)
         .sample_type(wgpu::FilterMode::Linear)
         .build();
-    let renderer = Renderer::new(
+    let mut renderer = Renderer::new(
         device,
         RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
@@ -172,7 +175,8 @@ async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(Render
         },
     )
     .map_err(|e| format!("failed to create renderer: {e}"))?;
-    Ok((context, RenderState { surface, window, renderer, target: None, upscaler }))
+    let hair = crate::hair::HairRenderer::new(device, &mut renderer);
+    Ok((context, RenderState { surface, window, renderer, target: None, upscaler, hair }))
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -241,6 +245,9 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::Space | KeyCode::KeyZ) => input.jump = pressed,
                     PhysicalKey::Code(KeyCode::KeyX | KeyCode::KeyJ) => input.tongue = pressed,
                     PhysicalKey::Code(KeyCode::Escape) if !cfg!(target_arch = "wasm32") => event_loop.exit(),
+                    PhysicalKey::Code(KeyCode::KeyH) if pressed && !event.repeat => {
+                        self.shader_hair = !self.shader_hair;
+                    }
                     PhysicalKey::Code(KeyCode::KeyF) if pressed && !event.repeat => {
                         self.stats.visible = !self.stats.visible;
                     }
@@ -282,7 +289,8 @@ impl ApplicationHandler<UserEvent> for App {
                 let (game, scene) = (&mut self.game, &mut self.scene);
                 hot(|| game.update(dt));
                 scene.reset();
-                hot(|| game.draw(scene, width as f64, height as f64));
+                let hair_image = self.shader_hair.then(|| state.hair.image.clone());
+                let hair_frame = hot(|| game.draw(scene, width as f64, height as f64, hair_image.as_ref()));
                 // Touch controls are laid out in screen pixels.
                 let mut overlay = Scene::new();
                 self.touch.draw(&mut overlay);
@@ -303,6 +311,10 @@ impl ApplicationHandler<UserEvent> for App {
                     });
                     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                     state.target = Some((width, height, view));
+                }
+                // The hair pass renders first; Vello copies its texture in.
+                if let Some(frame) = &hair_frame {
+                    state.hair.render(&handle.device, &handle.queue, frame);
                 }
                 let target_view = &state.target.as_ref().expect("target was just created").2;
                 state
@@ -405,6 +417,7 @@ pub fn run() {
         stats: FrameStats::default(),
         resolution: Resolution::initial(1.0),
         vsync: true,
+        shader_hair: true,
         last_frame: Instant::now(),
     };
     #[cfg(target_arch = "wasm32")]

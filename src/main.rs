@@ -2,6 +2,7 @@ mod konrad;
 mod canvas3d;
 mod game;
 mod gamepad;
+mod hair;
 mod jungle;
 mod level;
 mod paint;
@@ -27,7 +28,7 @@ Usage: camel-eon [MODE]
                 Developer tool: run with scripted input (e.g. -:1 R:1.2 RJ:0.3)
                 and save the last frame
 
-Keys V and F toggle vsync and the FPS overlay (window mode).
+Keys V, F and H toggle vsync, the FPS overlay and shader hair (window mode).
 
 Controls:
   ← → / A D     run

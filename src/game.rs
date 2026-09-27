@@ -10,7 +10,9 @@ use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
 use crate::level::{self, Level};
 use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
+use crate::hair::HairFrame;
 use crate::rig::Skeleton;
+use vello::peniko::ImageData;
 
 /// Profiling switch: parts of the frame to leave out (`SKIP_*` bit flags).
 /// Only set by the snapshot tool's GPU benchmark.
@@ -105,6 +107,13 @@ pub struct Game {
     squash_vel: f64,
     camera: DVec2,
     view_height: f64,
+    /// Hair simulation: the tips' swing (a damped spring driven by his
+    /// head's acceleration) and the hair's lagging facing when he turns.
+    hair_swing: DVec2,
+    hair_swing_vel: DVec2,
+    hair_facing: f64,
+    hair_facing_vel: f64,
+    prev_head_vel: DVec2,
     time: f64,
     won_at: Option<f64>,
     flash: f64,
@@ -135,6 +144,11 @@ impl Game {
             squash_vel: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
             view_height: VIEW_HEIGHT,
+            hair_swing: DVec2::ZERO,
+            hair_swing_vel: DVec2::ZERO,
+            hair_facing: 1.0,
+            hair_facing_vel: 0.0,
+            prev_head_vel: DVec2::ZERO,
             time: 0.0,
             won_at: None,
             flash: 0.0,
@@ -246,6 +260,7 @@ impl Game {
 
         let motion = self.motion();
         self.animator.update(dt, &motion);
+        self.update_hair(dt);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
         let speed = (self.player.vel.length() / 34.0).min(1.0);
@@ -259,6 +274,27 @@ impl Game {
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
 
         self.update_effects(dt);
+    }
+
+    /// Hair has inertia: when his head speeds up, stops, bobs, lands or
+    /// turns, the hair lags behind and springs back.
+    fn update_hair(&mut self, dt: f64) {
+        let p = &self.player;
+        // The head moves with the body, plus the run's bob and the idle nods.
+        let bob = if p.on_ground { (p.stride * 2.0).cos() * 0.6 * (p.vel.x.abs() / 14.0).min(1.0) } else { 0.0 };
+        let nod = (self.time * 0.31).cos() * 0.15;
+        let head_vel = p.vel + DVec2::new(0.0, bob + nod);
+        let accel = ((head_vel - self.prev_head_vel) / dt.max(1e-4)).clamp_length_max(120.0);
+        self.prev_head_vel = head_vel;
+        // Spring back to rest; pushed the opposite way to the acceleration.
+        let force = -self.hair_swing * 45.0 - self.hair_swing_vel * 5.0 - accel * 0.07;
+        self.hair_swing_vel += force * dt;
+        self.hair_swing = (self.hair_swing + self.hair_swing_vel * dt).clamp_length_max(0.14);
+        // Facing swings round after the head, overshooting a little.
+        let target = self.turn.clamp(-1.0, 1.0);
+        let pull = (target - self.hair_facing) * 60.0 - self.hair_facing_vel * 9.0;
+        self.hair_facing_vel += pull * dt;
+        self.hair_facing = (self.hair_facing + self.hair_facing_vel * dt).clamp(-1.15, 1.15);
     }
 
     fn update_effects(&mut self, dt: f64) {
@@ -340,7 +376,9 @@ impl Game {
         format!("pos ({:.2}, {:.2}) vel ({:.1}, {:.1}) {state} flies {caught} checkpoint {}", p.pos.x, p.pos.y, p.vel.x, p.vel.y, self.checkpoint)
     }
 
-    pub fn draw(&self, scene: &mut Scene, w: f64, h: f64) {
+    /// Draws a frame. With `hair_image`, Konrad's hair is shader-rendered and
+    /// its strands are returned for the frontend's hair pass.
+    pub fn draw(&self, scene: &mut Scene, w: f64, h: f64, hair_image: Option<&ImageData>) -> Option<HairFrame> {
         // In portrait, zoom out so there's still room to see ahead.
         let view_height = self.view_height.max(MIN_VIEW_WIDTH * h / w.max(1.0));
         let camera = Camera {
@@ -370,8 +408,9 @@ impl Game {
             },
         );
         }
+        let mut hair = None;
         if skip & SKIP_JOE == 0 {
-            self.draw_joe(&mut canvas);
+            hair = self.draw_joe(&mut canvas, hair_image);
         }
         for p in &self.particles {
             let pr = camera.project(p.pos);
@@ -396,9 +435,10 @@ impl Game {
                 &Rect::new(0.0, 0.0, w, h),
             );
         }
+        hair
     }
 
-    fn draw_joe(&self, canvas: &mut Canvas3d) {
+    fn draw_joe(&self, canvas: &mut Canvas3d, hair_image: Option<&ImageData>) -> Option<HairFrame> {
         let motion = self.motion();
         let pose = self.animator.pose(&motion);
         let p = &self.player;
@@ -448,12 +488,18 @@ impl Game {
         let root = hero::root(feet, rot, self.squash, stretch);
         let standing = p.on_ground && matches!(p.state, State::Normal);
         let solved = hero::plant(&self.skeleton, &pose, root, standing);
-        let look = Look { time: self.time };
+        let look = Look {
+            time: self.time,
+            vel: DVec3::new(p.vel.x, p.vel.y, 0.0),
+            stride: p.stride,
+            hair_swing: self.hair_swing,
+            hair_facing: self.hair_facing,
+        };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).
         let hero_depth = canvas.depth_of(DVec3::new(p.pos.x, p.pos.y, 0.0));
         let mut figure = Canvas3d::group(canvas.camera, 0.0);
-        let anchors = hero::draw(&mut figure, &solved, &look);
+        let anchors = hero::draw(&mut figure, &solved, &look, hair_image);
         canvas.push(hero_depth, figure.into_group());
 
         if let Some(t) = &p.tongue {
@@ -480,6 +526,7 @@ impl Game {
                 scene.stroke(&Stroke::new(width * 1.6).with_caps(vello::kurbo::Cap::Round), Affine::IDENTITY, HOOK, None, &claw);
             });
         }
+        anchors.hair
     }
 
     fn draw_hud(&self, scene: &mut Scene, w: f64, h: f64) {

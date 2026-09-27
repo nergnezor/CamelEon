@@ -1,6 +1,6 @@
 //! Konrad: the hero, an agent in the style of early-90s cinematic platformers
 //! (think Flashback): realistic proportions, smooth lifelike movement, and flat
-//! colour shading without outlines. Brown hair, a purple velour tracksuit
+//! colour shading without outlines. Big blue hair, a purple velour tracksuit
 //! with white side stripes, and white sneakers. He fires a grappling line
 //! from his right hand.
 //!
@@ -10,11 +10,13 @@
 
 use std::f64::consts::PI;
 
-use glam::{DQuat, DVec3};
+use glam::{DQuat, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Ellipse, Point, Shape, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
 use crate::canvas3d::Canvas3d;
+use crate::hair::{HairFrame, Strand};
+use vello::peniko::ImageData;
 use crate::rig::{Bone, Pose, Root, Skeleton, Solved};
 
 /// Bone indices.
@@ -51,7 +53,11 @@ const ZIP: Color = Color::from_rgb8(0xc8, 0xcc, 0xd4);
 const SNEAKER: Color = Color::from_rgb8(0xee, 0xea, 0xe4);
 const SOLE: Color = Color::from_rgb8(0x9a, 0x9a, 0xa2);
 const SKIN: Color = Color::from_rgb8(0xd4, 0x9c, 0x7a);
-const HAIR: Color = Color::from_rgb8(0x4a, 0x2c, 0x1a);
+/// Big blue hair: the dark mass underneath, the locks, and their shine.
+const HAIR_DARK: Color = Color::from_rgb8(0x16, 0x26, 0x62);
+const HAIR: Color = Color::from_rgb8(0x2a, 0x52, 0xb8);
+const HAIR_LIGHT: Color = Color::from_rgb8(0x5c, 0x8e, 0xf0);
+const HAIR_SHINE: Color = Color::from_rgb8(0xb4, 0xd2, 0xff);
 const FEATURE: Color = Color::from_rgb8(0x2a, 0x1c, 0x18);
 
 /// Height of the soles below the ankle bone.
@@ -304,12 +310,22 @@ pub fn plant(skeleton: &Skeleton, pose: &Pose, root: Root, grounded: bool) -> So
 #[derive(Clone, Copy, Default)]
 pub struct Look {
     pub time: f64,
+    /// World-space velocity and stride, so the hair can trail and bounce.
+    pub vel: DVec3,
+    pub stride: f64,
+    /// Where the hair has swung to, from the hair simulation: an offset of
+    /// the tips in world units (x right, y up), and which way the hair is
+    /// facing (−1..1, lagging behind his head when he turns).
+    pub hair_swing: DVec2,
+    pub hair_facing: f64,
 }
 
 /// Points on Konrad that the game needs.
 pub struct Anchors {
     /// Where the grappling line leaves his hand.
     pub hand: DVec3,
+    /// Hair strands for the shader pass, when shader hair is on.
+    pub hair: Option<HairFrame>,
 }
 
 /// Colour for the limbs on the far side: a touch darker and cooler.
@@ -431,19 +447,51 @@ const HEAD_SHAPE: [(f64, f64); 17] = [
     (-0.01, -0.07),
     (-0.04, -0.075),
 ];
-/// Hair: over the top and back, with a fringe falling forward.
-const HAIR_SHAPE: [(f64, f64); 11] = [
-    (-0.078, -0.03),
-    (-0.113, 0.03),
-    (-0.098, 0.112),
-    (-0.02, 0.152),
-    (0.06, 0.135),
-    (0.098, 0.088),
-    (0.072, 0.072),
-    (0.035, 0.095),
-    (-0.02, 0.09),
-    (-0.05, 0.05),
-    (-0.045, 0.0),
+/// The big hair's dark mass, behind and over the head.
+const HAIR_MASS: [(f64, f64); 12] = [
+    (0.085, 0.065),
+    (0.12, 0.17),
+    (0.05, 0.26),
+    (-0.06, 0.28),
+    (-0.17, 0.23),
+    (-0.24, 0.12),
+    (-0.23, 0.0),
+    (-0.17, -0.07),
+    (-0.09, -0.07),
+    (-0.05, 0.0),
+    (-0.01, 0.07),
+    (0.05, 0.085),
+];
+
+/// One lock of the big hair: where it grows from on the scalp (an angle
+/// round the head, 0 = forward, π/2 = up), how far it swings round, its
+/// length (how far out it reaches, in head radii) and its width.
+struct Lock {
+    root: f64,
+    curl: f64,
+    reach: f64,
+    width: f64,
+}
+
+/// Back to front: the locks further back are drawn first.
+const LOCKS: [Lock; 16] = [
+    Lock { root: 2.9, curl: 0.5, reach: 1.9, width: 0.09 },
+    Lock { root: 2.5, curl: 0.6, reach: 2.2, width: 0.1 },
+    Lock { root: 3.3, curl: 0.35, reach: 1.7, width: 0.085 },
+    Lock { root: 2.1, curl: 0.55, reach: 2.3, width: 0.1 },
+    Lock { root: 3.6, curl: 0.25, reach: 1.5, width: 0.07 },
+    Lock { root: 1.75, curl: 0.5, reach: 2.25, width: 0.1 },
+    Lock { root: 2.7, curl: 0.3, reach: 2.0, width: 0.08 },
+    Lock { root: 1.4, curl: 0.45, reach: 2.15, width: 0.095 },
+    Lock { root: 2.3, curl: 0.2, reach: 2.05, width: 0.075 },
+    Lock { root: 1.1, curl: 0.4, reach: 1.95, width: 0.09 },
+    Lock { root: 1.9, curl: 0.15, reach: 1.9, width: 0.07 },
+    Lock { root: 0.85, curl: 0.35, reach: 1.7, width: 0.085 },
+    Lock { root: 1.55, curl: 0.1, reach: 1.8, width: 0.065 },
+    // The fringe, falling forward over the forehead.
+    Lock { root: 0.75, curl: -0.55, reach: 1.35, width: 0.07 },
+    Lock { root: 0.95, curl: -0.6, reach: 1.45, width: 0.075 },
+    Lock { root: 0.6, curl: -0.45, reach: 1.25, width: 0.06 },
 ];
 /// Hips in jeans, around the pelvis: x across, y up.
 const HIPS_SHAPE: [(f64, f64); 7] = [
@@ -482,6 +530,8 @@ const HAND_SHAPE: [(f64, f64); 7] = [
 /// One thing to paint, in order.
 enum Part {
     Fill(BezPath, Color),
+    Shaded(BezPath, vello::peniko::Gradient),
+    Image(ImageData, Affine),
     /// Velour: the fabric colour with a soft lighter sheen along its edges.
     Velour(BezPath, Color),
     Line(BezPath, Color, f64),
@@ -500,7 +550,9 @@ fn smooth_open(points: &[Point]) -> BezPath {
     path
 }
 
-pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
+/// Draws Konrad. With `hair_image` (the texture the hair shader renders
+/// into) his hair is drawn as shader-lit strands, otherwise as vector locks.
+pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&ImageData>) -> Anchors {
     let cam = canvas.camera;
     let pt = |p: DVec3| cam.point(p);
     let k = (s.root.scale.x + s.root.scale.y + s.root.scale.z) / 3.0;
@@ -600,11 +652,22 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
     let head_px = cam.project(s.pos[HEAD]).scale * k;
     let mut head_parts = vec![
         Part::Fill(neck, SKIN),
+        Part::Fill(hair_mass(look, head_c, up, head_px), HAIR_DARK),
         Part::Fill(smooth_closed(&placed(&HEAD_SHAPE, head_c, fwd, up, head_px)), SKIN),
-        Part::Fill(smooth_closed(&placed(&HAIR_SHAPE, head_c, fwd, up, head_px)), HAIR),
     ];
     let ear = Ellipse::new(head_c + (fwd * -0.02 + up * 0.005) * head_px, (0.018 * head_px, 0.028 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2);
     head_parts.push(Part::Fill(ear.to_path(0.1), crate::canvas3d::darken(SKIN, 0.12)));
+    // The hair swings round after his head when he turns.
+    let hair_fwd = Vec2::new(-up.y, up.x) * look.hair_facing.clamp(-1.0, 1.0);
+    let mut hair_frame = None;
+    match hair_image {
+        Some(image) => {
+            let frame = hair_strands(look, head_c, hair_fwd, up, head_px);
+            head_parts.push(Part::Image(image.clone(), frame.transform()));
+            hair_frame = Some(frame);
+        }
+        None => head_parts.extend(hair_locks(look, head_c, hair_fwd, up, head_px)),
+    }
     // The ribbed collar wraps the bottom of the neck.
     head_parts.insert(1, Part::Fill(band(pt(s.at(CHEST, DVec3::new(0.0, 0.055, 0.0))), pt(s.at(CHEST, DVec3::new(0.0, 0.09, 0.01))), 0.105 * px), RIB));
     parts.extend(head_parts);
@@ -632,6 +695,8 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
         for part in &parts {
             match part {
                 Part::Fill(path, color) => scene.fill(Fill::NonZero, id, *color, None, path),
+                Part::Shaded(path, gradient) => scene.fill(Fill::NonZero, id, gradient, None, path),
+                Part::Image(image, transform) => scene.draw_image(image, *transform),
                 Part::Velour(path, color) => {
                     // Velour catches the light at its edges: a soft lighter
                     // rim inside the shape.
@@ -656,6 +721,129 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
 
     Anchors {
         hand: s.at(HAND_R, DVec3::new(0.0, -0.09, 0.0)),
+        hair: hair_frame,
+    }
+}
+
+/// The dark mass under the big hair. It follows the hair's lagging facing
+/// and leans with its swing, more at the far edge, so it moves with the
+/// strands instead of staying stiff.
+fn hair_mass(look: &Look, head_c: Point, up: Vec2, head_px: f64) -> BezPath {
+    let fwd = Vec2::new(-up.y, up.x) * look.hair_facing.clamp(-1.0, 1.0);
+    let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px;
+    let points: Vec<Point> = HAIR_MASS
+        .iter()
+        .map(|&(x, y)| {
+            // How far this point is from the scalp decides how much it swings.
+            let reach = ((x + 0.01).hypot(y - 0.02) / 0.25).clamp(0.0, 1.0);
+            head_c + (fwd * x + up * y) * head_px + swing * (reach * reach * 0.8)
+        })
+        .collect();
+    smooth_closed(&points)
+}
+
+/// The locks of the big hair, placed on the head (in its profile frame) and
+/// moved by his motion: they trail behind when he runs, bounce with his
+/// steps and sway a little when he stands.
+fn hair_locks(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -> Vec<Part> {
+    let at = |x: f64, y: f64| head_c + (fwd * x + up * y) * head_px;
+    // Head as an ellipse in the profile frame, and the scalp point at angle a.
+    let (cx, cy, rx, ry) = (-0.01, 0.02, 0.1, 0.125);
+    let on_head = |a: f64, r: f64| (cx + rx * r * a.cos(), cy + ry * r * a.sin());
+    let speed = look.vel.x.abs();
+    let trail = -(speed * 0.004).min(0.09);
+    let bounce = (look.stride * 2.0).sin() * 0.012 * (speed / 14.0).min(1.0) - (look.vel.y * 0.002).clamp(-0.04, 0.04);
+    let idle = (look.time * 1.3).sin() * 0.006;
+
+    let mut parts = Vec::new();
+    for (i, lock) in LOCKS.iter().enumerate() {
+        let wobble = (look.time * 2.1 + i as f64 * 1.3).sin() * 0.03;
+        let a0 = lock.root;
+        let a1 = lock.root + lock.curl * 0.5;
+        let a2 = lock.root + lock.curl + wobble;
+        let (x0, y0) = on_head(a0, 0.95);
+        let (x1, y1) = on_head(a1, 1.0 + (lock.reach - 1.0) * 0.6);
+        let (x2, y2) = on_head(a2, lock.reach);
+        // The tip trails, bounces and droops more than the middle.
+        let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px * (0.8 + 0.4 * rand(i, 9));
+        let tip = at(x2 + trail + idle, y2 + bounce - 0.02) + swing;
+        let mid = at(x1 + trail * 0.4, y1 + bounce * 0.4) + swing * 0.35;
+        let root = at(x0, y0);
+        let shape = limb(&[root, mid, tip], &[lock.width * 0.7 * head_px, lock.width * head_px, lock.width * 0.12 * head_px]);
+        let gradient = vello::peniko::Gradient::new_linear(root, tip).with_stops([
+            (0.0, HAIR_DARK),
+            (0.45, HAIR),
+            (0.85, HAIR_LIGHT),
+            (1.0, HAIR),
+        ]);
+        parts.push(Part::Shaded(shape, gradient));
+        // A shine along the lock, towards the light (up).
+        let side = Vec2::new(-(tip - root).y, (tip - root).x).normalize() * lock.width * head_px * 0.18;
+        let side = if side.y < 0.0 { side } else { -side };
+        let shine = smooth_open(&[root.lerp(mid, 0.5) + side, mid + side, mid.lerp(tip, 0.6) + side * 0.6]);
+        parts.push(Part::Line(shine, HAIR_SHINE.with_alpha(0.75), (lock.width * head_px * 0.12).max(0.8)));
+    }
+    parts
+}
+
+/// A repeatable pseudo-random number in 0..1.
+fn rand(i: usize, k: u64) -> f64 {
+    let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 29;
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// The big hair as hundreds of strands for the hair shader: each grows from
+/// the scalp, sweeps out and round to fill the volume, and trails, bounces
+/// and sways with his motion like the vector locks. Back layers come first
+/// and are darker; the front layers are brighter.
+fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -> HairFrame {
+    let at = |x: f64, y: f64| head_c + (fwd * x + up * y) * head_px;
+    let (cx, cy, rx, ry) = (-0.01, 0.02, 0.1, 0.125);
+    let on_head = |a: f64, r: f64| (cx + rx * r * a.cos(), cy + ry * r * a.sin());
+    let speed = look.vel.x.abs();
+    let trail = -(speed * 0.004).min(0.09);
+    let bounce = (look.stride * 2.0).sin() * 0.012 * (speed / 14.0).min(1.0) - (look.vel.y * 0.002).clamp(-0.04, 0.04);
+
+    let count = 850;
+    let mut strands = Vec::with_capacity(count);
+    for i in 0..count {
+        let layer = i as f64 / count as f64; // 0 = back, 1 = front
+        let fringe = rand(i, 1) < 0.1;
+        let root = if fringe { 0.55 + rand(i, 2) * 0.45 } else { 0.8 + rand(i, 2) * 2.9 };
+        let curl = if fringe { -0.4 - rand(i, 3) * 0.35 } else { 0.1 + rand(i, 3) * 0.6 };
+        let reach = if fringe { 1.2 + rand(i, 4) * 0.3 } else { 1.5 + rand(i, 4) * 0.85 } * (0.85 + 0.15 * layer);
+        let wobble = (look.time * 2.1 + i as f64 * 0.37).sin() * 0.03;
+        // Each strand follows the simulated swing a bit differently.
+        let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px * (0.7 + 0.6 * rand(i, 9));
+        let points: Vec<Point> = (0..8)
+            .map(|j| {
+                let t = j as f64 / 7.0;
+                let a = root + (curl + wobble) * t;
+                let r = 0.95 + (reach - 0.95) * (1.0 - (1.0 - t) * (1.0 - t));
+                let (x, y) = on_head(a, r);
+                at(x + trail * t * t, y + (bounce - 0.02) * t * t) + swing * (t * t)
+            })
+            .collect();
+        let shade = 0.55 + 0.45 * layer + (rand(i, 5) - 0.5) * 0.2;
+        let [r, g, b, _] = HAIR.components;
+        strands.push(Strand {
+            points,
+            width: head_px * (0.016 + rand(i, 6) * 0.012),
+            color: [r * shade as f32, g * shade as f32, b * shade as f32],
+            seed: rand(i, 7) as f32,
+        });
+    }
+    let center = at(-0.05, 0.12);
+    let size = 0.72 * head_px;
+    HairFrame {
+        strands,
+        origin: center - Vec2::new(size / 2.0, size / 2.0),
+        size,
+        center: at(-0.01, 0.02),
+        light: Vec2::new(0.55, -0.85),
     }
 }
 

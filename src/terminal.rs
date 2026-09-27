@@ -80,6 +80,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
+    let hair = crate::hair::HairRenderer::new(device, &mut renderer);
     let _guard = TerminalGuard::enter()?;
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut scene = Scene::new();
@@ -148,7 +149,9 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         game.update(now.duration_since(last_frame).as_secs_f64());
         last_frame = now;
         scene.reset();
-        game.draw(&mut scene, width as f64, height as f64);
+        if let Some(frame) = game.draw(&mut scene, width as f64, height as f64, Some(&hair.image)) {
+            hair.render(device, queue, &frame);
+        }
         stats.draw(&mut scene, width as f64, height as f64, true, 1.0);
 
         renderer.render_to_texture(
