@@ -11,10 +11,9 @@ use crate::jungle::{self, WorldView};
 use crate::level::{self, Level};
 use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
 use crate::frame::{FrameInfo, Layers, Post};
-use crate::hair::HairFrame;
+use crate::hair::{HairFrame, HairStyle};
 use crate::weather::{self, Weather};
 use crate::rig::Skeleton;
-use vello::peniko::ImageData;
 
 /// Profiling switch: parts of the frame to leave out (`SKIP_*` bit flags).
 /// Only set by the snapshot tool's GPU benchmark.
@@ -109,6 +108,13 @@ pub struct Game {
     squash_vel: f64,
     camera: DVec2,
     view_height: f64,
+    /// Breathing: the phase of the breath cycle, and how out of breath he is
+    /// (0..1), which builds up running and fades while he rests.
+    breath_phase: f64,
+    exertion: f64,
+    /// How far the view leads ahead of him, −1..1 as a share of the lead
+    /// room; it grows with speed so there's more to see the faster he runs.
+    lead: f64,
     pub weather: Weather,
     /// Hair simulation: the tips' swing (a damped spring driven by his
     /// head's acceleration) and the hair's lagging facing when he turns.
@@ -147,6 +153,9 @@ impl Game {
             squash_vel: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
             view_height: VIEW_HEIGHT,
+            lead: 0.0,
+            breath_phase: 0.0,
+            exertion: 0.0,
             weather: Weather::new(),
             hair_swing: DVec2::ZERO,
             hair_swing_vel: DVec2::ZERO,
@@ -265,6 +274,11 @@ impl Game {
         let motion = self.motion();
         self.animator.update(dt, &motion);
         self.update_hair(dt);
+        let effort = (self.player.vel.x.abs() / 20.0).min(1.0);
+        let rate = if effort > self.exertion { 0.4 } else { 0.08 };
+        self.exertion += (effort - self.exertion) * (1.0 - (-dt * rate).exp());
+        // One breath about every four seconds at rest, panting when winded.
+        self.breath_phase += dt * (1.5 + 3.5 * self.exertion);
         self.weather.update(dt, self.time);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
@@ -272,9 +286,17 @@ impl Game {
         let target_view = VIEW_HEIGHT + (VIEW_HEIGHT_FAST - VIEW_HEIGHT) * speed;
         self.view_height += (target_view - self.view_height) * (1.0 - (-dt * 1.2).exp());
 
-        // Camera follows with a little look-ahead.
-        let target = self.player.pos + DVec2::new(self.turn * 2.0 + self.player.vel.x * 0.22, 1.7);
-        let ck = DVec2::new(1.0 - (-dt * 6.0).exp(), 1.0 - (-dt * 3.0).exp());
+        // Camera follows him; the look-ahead (`lead`) is applied in `draw`,
+        // where the width of the view is known. It eases in slowly so turning
+        // round doesn't whip the view across.
+        let target_lead = (self.player.vel.x / 30.0).clamp(-1.0, 1.0);
+        self.lead += (target_lead - self.lead) * (1.0 - (-dt * 2.0).exp());
+        let follow = DVec2::new(6.0, 3.0);
+        // Aim ahead by the distance the smoothing lags behind at this speed,
+        // so the camera keeps up with him instead of eating the look-ahead.
+        let lag = 0.75 * self.player.vel.x / follow.x;
+        let target = self.player.pos + DVec2::new(self.turn * 1.5 + lag, 1.7);
+        let ck = DVec2::new(1.0 - (-dt * follow.x).exp(), 1.0 - (-dt * follow.y).exp());
         self.camera += (target - self.camera) * ck;
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
 
@@ -326,6 +348,11 @@ impl Game {
         }
     }
 
+    /// How far into a breath he is: 0 (out) to 1 (in), deeper when winded.
+    fn breath(&self) -> f64 {
+        (0.5 - 0.5 * self.breath_phase.cos()) * (1.0 + 0.5 * self.exertion)
+    }
+
     fn motion(&self) -> Motion {
         let p = &self.player;
         Motion {
@@ -335,6 +362,8 @@ impl Game {
             vel: DVec3::new(p.vel.x, p.vel.y, 0.0),
             heading: hero::heading(self.turn, self.away),
             airborne: !p.on_ground,
+            crouch: p.crouch(),
+            breath: self.breath(),
             climbing: matches!(p.state, State::Climbing(_)),
             swinging: matches!(p.state, State::Swinging { .. }),
             grappling: p.tongue.is_some(),
@@ -381,17 +410,17 @@ impl Game {
         format!("pos ({:.2}, {:.2}) vel ({:.1}, {:.1}) {state} flies {caught} checkpoint {}", p.pos.x, p.pos.y, p.vel.x, p.vel.y, self.checkpoint)
     }
 
-    /// Draws a frame. With `hair_image`, Konrad's hair is shader-rendered and
-    /// its strands are returned for the frontend's hair pass.
-    /// Draws a frame into the renderer's layers (see `frame`). With
-    /// `hair_image`, Konrad's hair is shader-rendered and its strands are
+    /// Draws a frame into the renderer's layers (see `frame`). With an image
+    /// in `hair_style`, Konrad's hair is shader-rendered and its strands are
     /// returned for the hair pass.
-    pub fn draw(&self, layers: &mut Layers, w: f64, h: f64, hair_image: Option<&ImageData>) -> FrameInfo {
+    pub fn draw(&self, layers: &mut Layers, w: f64, h: f64, hair_style: HairStyle) -> FrameInfo {
         // In portrait, zoom out so there's still room to see ahead.
         let view_height = self.view_height.max(MIN_VIEW_WIDTH * h / w.max(1.0));
+        // At full speed he runs in the back fifth of the screen.
+        let lead_room = view_height * w / h.max(1.0) * 0.28;
         let camera = Camera {
             // The extra height in portrait goes mostly above him, not into the ground.
-            eye: DVec3::new(self.camera.x, self.camera.y + (view_height - self.view_height) * 0.3, -CAMERA_DISTANCE),
+            eye: DVec3::new(self.camera.x + self.lead * lead_room, self.camera.y + (view_height - self.view_height) * 0.3, -CAMERA_DISTANCE),
             focal: h / view_height * CAMERA_DISTANCE,
             center: Point::new(w / 2.0, h / 2.0),
         };
@@ -435,7 +464,7 @@ impl Game {
         }
         let mut hair = None;
         if skip & SKIP_JOE == 0 {
-            hair = self.draw_joe(&mut canvas, hair_image);
+            hair = self.draw_joe(&mut canvas, hair_style);
         }
         for p in &self.particles {
             let pr = camera.project(p.pos);
@@ -485,7 +514,7 @@ impl Game {
         light * (1.0 - 0.35 * self.weather.rain)
     }
 
-    fn draw_joe(&self, canvas: &mut Canvas3d, hair_image: Option<&ImageData>) -> Option<HairFrame> {
+    fn draw_joe(&self, canvas: &mut Canvas3d, hair_style: HairStyle) -> Option<HairFrame> {
         let motion = self.motion();
         let pose = self.animator.pose(&motion);
         let p = &self.player;
@@ -559,12 +588,13 @@ impl Game {
             hair_facing: self.hair_facing,
             light: self.light_at(p.pos),
             wind: self.weather.wind,
+            breath: self.breath(),
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).
         let hero_depth = canvas.depth_of(DVec3::new(p.pos.x, p.pos.y, 0.0));
         let mut figure = Canvas3d::group(canvas.camera, 0.0);
-        let anchors = hero::draw(&mut figure, &solved, &look, hair_image);
+        let anchors = hero::draw(&mut figure, &solved, &look, hair_style);
         canvas.push(hero_depth, figure.into_group());
 
         if let Some(t) = &p.tongue {

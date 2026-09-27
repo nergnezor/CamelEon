@@ -30,7 +30,8 @@ Usage: camel-eon [MODE]
                 Developer tool: run with scripted input (e.g. -:1 R:1.2 RJ:0.3)
                 and save the last frame
 
-Keys V, F and H toggle vsync, the FPS overlay and shader hair; C cycles the
+Keys V and F toggle vsync and the FPS overlay, H cycles shader, both and vector
+hair; C cycles the
 weather (showers, clear, rain) (window mode).
 
 Controls:

@@ -20,6 +20,12 @@ const GROUND_ACCEL: f64 = 120.0;
 const AIR_ACCEL: f64 = 56.0;
 const GRAVITY: f64 = 32.0;
 const JUMP_SPEED: f64 = 13.5;
+/// Holding jump on the ground crouches deeper for up to this long (seconds),
+/// then he leaps; letting go leaps at once. The deeper the crouch, the higher
+/// the jump: from `JUMP_MIN` to `JUMP_MAX` times `JUMP_SPEED`.
+const CHARGE_TIME: f64 = 0.4;
+const JUMP_MIN: f64 = 0.8;
+const JUMP_MAX: f64 = 1.35;
 const MAX_FALL: f64 = 22.0;
 const COYOTE_TIME: f64 = 0.1;
 const JUMP_BUFFER: f64 = 0.12;
@@ -83,6 +89,8 @@ pub struct Player {
     pub tongue: Option<Tongue>,
     coyote: f64,
     jump_buffer: f64,
+    /// Seconds jump has been held while crouching to jump, if he is.
+    charge: Option<f64>,
     /// Seconds spent standing still; drives camouflage.
     pub idle: f64,
     /// Advances with distance moved; drives the walk and climb cycles.
@@ -103,10 +111,27 @@ impl Player {
             tongue: None,
             coyote: 0.0,
             jump_buffer: 0.0,
+            charge: None,
             idle: 0.0,
             stride: 0.0,
             boost: 0.0,
         }
+    }
+
+    /// How deep he's crouching to jump, 0..1 (0 when not crouching): a quick
+    /// dip at once, then deeper with the charge.
+    pub fn crouch(&self) -> f64 {
+        self.charge.map_or(0.0, |t| 0.3 + 0.7 * (t / CHARGE_TIME).min(1.0))
+    }
+
+    /// Leaps with the power of a crouch held for `charge` seconds.
+    fn leap(&mut self, charge: f64, events: &mut Events) {
+        let power = (charge / CHARGE_TIME).min(1.0);
+        self.vel.y = JUMP_SPEED * (JUMP_MIN + (JUMP_MAX - JUMP_MIN) * power);
+        self.charge = None;
+        self.jump_buffer = 0.0;
+        self.coyote = 0.0;
+        events.jumped = true;
     }
 
     pub fn mouth(&self) -> DVec2 {
@@ -152,6 +177,7 @@ impl Player {
             if let Some(i) = self.climbable_at(level) {
                 self.state = State::Climbing(i);
                 self.vel = DVec2::ZERO;
+                self.charge = None;
                 return;
             }
         }
@@ -170,15 +196,25 @@ impl Player {
         self.vel.x = approach(self.vel.x, dir * top, accel * dt);
         self.coyote = if self.on_ground { COYOTE_TIME } else { (self.coyote - dt).max(0.0) };
 
-        if self.jump_buffer > 0.0 && self.coyote > 0.0 {
-            self.vel.y = JUMP_SPEED;
-            self.jump_buffer = 0.0;
-            self.coyote = 0.0;
-            events.jumped = true;
+        if let Some(held) = self.charge {
+            // Crouching to jump: leap on release, at full power, or if he
+            // runs off the edge meanwhile.
+            let held = held + dt;
+            if !c.jump || held >= CHARGE_TIME || !self.on_ground {
+                self.leap(held, events);
+            } else {
+                self.charge = Some(held);
+            }
+        } else if self.jump_buffer > 0.0 && self.coyote > 0.0 {
+            if self.on_ground && c.jump {
+                self.charge = Some(0.0);
+                self.jump_buffer = 0.0;
+            } else {
+                // Already let go, or just off an edge: a quick hop.
+                self.leap(0.0, events);
+            }
         }
-        // Releasing jump early makes a shorter hop.
-        let gravity = if self.vel.y > 0.0 && !c.jump { GRAVITY * 2.2 } else { GRAVITY };
-        self.vel.y = (self.vel.y - gravity * dt).max(-MAX_FALL);
+        self.vel.y = (self.vel.y - GRAVITY * dt).max(-MAX_FALL);
         self.stride += self.vel.x.abs().min(16.0) * dt * 1.6 + self.vel.x.abs() * dt * 0.3;
         self.move_and_collide(dt, level, events);
     }

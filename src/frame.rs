@@ -15,7 +15,7 @@ use vello::peniko::{Color, ImageData};
 use vello::wgpu;
 use vello::{AaConfig, Renderer, RendererOptions, Scene};
 
-use crate::hair::{HairFrame, HairRenderer};
+use crate::hair::{HairFrame, HairMode, HairRenderer, HairStyle};
 
 /// What the game draws into, each frame.
 #[derive(Default)]
@@ -215,8 +215,7 @@ struct Targets {
 pub struct FrameRenderer {
     pub renderer: Renderer,
     hair: HairRenderer,
-    /// Shader-rendered hair; off draws vector locks instead.
-    pub shader_hair: bool,
+    pub hair_mode: HairMode,
     layers: Layers,
     targets: Option<Targets>,
     layout: wgpu::BindGroupLayout,
@@ -331,7 +330,7 @@ impl FrameRenderer {
         Ok(Self {
             renderer,
             hair,
-            shader_hair: true,
+            hair_mode: HairMode::Both,
             layers: Layers::default(),
             targets: None,
             layout,
@@ -344,7 +343,12 @@ impl FrameRenderer {
 
     /// The hair image to pass to `Game::draw`, if shader hair is on.
     pub fn hair_image(&self) -> Option<ImageData> {
-        self.shader_hair.then(|| self.hair.image.clone())
+        (self.hair_mode != HairMode::Vector).then(|| self.hair.image.clone())
+    }
+
+    /// Whether the game should draw the vector hair locks.
+    pub fn hair_locks(&self) -> bool {
+        self.hair_mode != HairMode::Shader
     }
 
     fn targets(&mut self, device: &wgpu::Device, width: u32, height: u32) -> &Targets {
@@ -400,11 +404,12 @@ impl FrameRenderer {
         queue: &wgpu::Queue,
         width: u32,
         height: u32,
-        draw: impl FnOnce(&mut Layers, Option<&ImageData>) -> FrameInfo,
+        draw: impl FnOnce(&mut Layers, HairStyle) -> FrameInfo,
     ) -> Result<&wgpu::TextureView, vello::Error> {
         self.layers.reset();
         let hair_image = self.hair_image();
-        let info = draw(&mut self.layers, hair_image.as_ref());
+        let locks = self.hair_locks();
+        let info = draw(&mut self.layers, HairStyle { image: hair_image.as_ref(), locks });
         if let Some(frame) = &info.hair {
             self.hair.render(device, queue, frame);
             // Vello caches images in its atlas; without this it keeps

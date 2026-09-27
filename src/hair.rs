@@ -9,6 +9,33 @@ use vello::peniko::{ImageAlphaType, ImageData};
 use vello::wgpu::{self, util::DeviceExt};
 use vello::Renderer;
 
+/// How Konrad's hair is drawn: shader strands, vector locks, or both (the
+/// strands over the locks).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HairMode {
+    Shader,
+    Both,
+    Vector,
+}
+
+impl HairMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Shader => Self::Both,
+            Self::Both => Self::Vector,
+            Self::Vector => Self::Shader,
+        }
+    }
+}
+
+/// What the game needs to draw the hair: the image the shader renders into
+/// (when strands are on) and whether to draw the vector locks.
+#[derive(Clone, Copy, Default)]
+pub struct HairStyle<'a> {
+    pub image: Option<&'a ImageData>,
+    pub locks: bool,
+}
+
 /// Side of the square hair texture, in pixels.
 pub const TEXTURE_SIZE: u32 = 512;
 

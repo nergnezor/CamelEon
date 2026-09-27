@@ -11,12 +11,12 @@
 use std::f64::consts::PI;
 
 use glam::{DQuat, DVec2, DVec3};
-use vello::kurbo::{Affine, BezPath, Ellipse, Point, Shape, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Ellipse, Point, Rect, Shape, Stroke, Vec2};
 use vello::Scene;
 use vello::peniko::{Color, Fill};
 
 use crate::canvas3d::Canvas3d;
-use crate::hair::{HairFrame, Strand};
+use crate::hair::{HairFrame, HairStyle, Strand};
 use vello::peniko::ImageData;
 use crate::rig::{Bone, Pose, Root, Skeleton, Solved};
 
@@ -108,6 +108,10 @@ pub struct Motion {
     pub vel: DVec3,
     pub heading: DQuat,
     pub airborne: bool,
+    /// Crouching to jump, 0..1: deeper the longer jump is held.
+    pub crouch: f64,
+    /// Breathing in, 0 (out) to 1 (in), a bit more when winded.
+    pub breath: f64,
     pub climbing: bool,
     pub swinging: bool,
     /// The grappling line is out (the right arm points along it).
@@ -124,6 +128,7 @@ pub struct Animator {
     climb: f64,
     swing: f64,
     aim: f64,
+    crouch: f64,
 }
 
 impl Animator {
@@ -142,6 +147,9 @@ impl Animator {
         self.air += (air - self.air) * k;
         self.climb += (climb - self.climb) * k;
         self.swing += (swing - self.swing) * k;
+        // Quick into the crouch and quicker out of it on the leap.
+        let rate = if m.crouch > self.crouch { 25.0 } else { 40.0 };
+        self.crouch += (m.crouch - self.crouch) * (1.0 - (-dt * rate).exp());
         let aim = (m.grappling && !m.climbing) as u8 as f64;
         self.aim += (aim - self.aim) * (1.0 - (-dt * 20.0).exp());
     }
@@ -152,6 +160,7 @@ impl Animator {
         pose.blend(&air(m), self.air);
         pose.blend(&climb(m), self.climb);
         pose.blend(&swing(m), self.swing);
+        pose.blend(&crouch(), self.crouch);
         if self.aim > 0.0 {
             // Point the right arm along the grappling line.
             let local = (m.heading.inverse() * m.aim).normalize_or(DVec3::Y);
@@ -177,11 +186,6 @@ fn rz(a: f64) -> DQuat {
 // Animation clips. Limbs hang along −y: a negative rotation about x swings
 // them forward, a positive rotation about z swings them out to +x.
 
-/// Breathing: 0..1..0, one breath about every four seconds.
-fn breath(time: f64) -> f64 {
-    0.5 - 0.5 * (time * 1.5).cos()
-}
-
 /// Standing: the whole body is alive, not just the arms. He breathes (chest
 /// rises and fills out), sways slowly from the ankles, rests on one leg with
 /// the other knee relaxed and changes legs now and then, glances up and
@@ -189,7 +193,7 @@ fn breath(time: f64) -> f64 {
 fn idle(m: &Motion) -> Pose {
     let mut p = Pose::rest(COUNT);
     let t = m.time;
-    let b = breath(t);
+    let b = m.breath;
     let sway = (t * 0.5).sin();
     let lagged_sway = (t * 0.5 - 0.6).sin();
     // Weight on the left leg when > 0, eased so it settles on each side.
@@ -205,8 +209,8 @@ fn idle(m: &Motion) -> Pose {
 
     // Lean from the ankles: the pelvis tips, the hips counter so the feet stay.
     p.rotate(PELVIS, rx(0.05 * sway) * rz(0.03 * weight));
-    p.rotate(SPINE, rx(-0.03 * b - 0.02 * sway));
-    p.rotate(CHEST, rx(-0.05 * b));
+    p.rotate(SPINE, rx(-0.05 * b - 0.02 * sway));
+    p.rotate(CHEST, rx(-0.09 * b));
     p.rotate(NECK, rx(0.04 * b + 0.1 * glance));
     p.rotate(HEAD, rx(0.08 * (t * 0.31).sin() + 0.35 * glance));
     for (hip, knee, side) in [(HIP_L, KNEE_L, -1.0), (HIP_R, KNEE_R, 1.0)] {
@@ -261,6 +265,29 @@ fn air(m: &Motion) -> Pose {
     for (shoulder, elbow, side) in [(SHOULDER_L, ELBOW_L, -1.0), (SHOULDER_R, ELBOW_R, 1.0)] {
         p.rotate(shoulder, rx(-0.9 + 0.5 * fall) * rz(side * (0.3 + 0.5 * fall)));
         p.rotate(elbow, rx(-0.5));
+    }
+    p
+}
+
+/// Winding up to jump: deep knee bend, leaning forward, arms swung back.
+/// Angles are chosen so the feet stay flat under him.
+fn crouch() -> Pose {
+    let mut p = Pose::rest(COUNT);
+    let (lean, thigh, shin) = (0.35, -1.25, 0.45);
+    p.rotate(PELVIS, rx(lean));
+    p.rotate(SPINE, rx(0.2));
+    p.rotate(CHEST, rx(0.05));
+    // Keep looking ahead.
+    p.rotate(NECK, rx(-0.25));
+    p.rotate(HEAD, rx(-0.3));
+    for (hip, knee, foot, side) in [(HIP_L, KNEE_L, FOOT_L, -1.0), (HIP_R, KNEE_R, FOOT_R, 1.0)] {
+        p.rotate(hip, rx(thigh - lean) * rz(side * 0.08));
+        p.rotate(knee, rx(shin - thigh));
+        p.rotate(foot, rx(-shin));
+    }
+    for (shoulder, elbow, side) in [(SHOULDER_L, ELBOW_L, -1.0), (SHOULDER_R, ELBOW_R, 1.0)] {
+        p.rotate(shoulder, rx(0.9) * rz(side * 0.15));
+        p.rotate(elbow, rx(-0.3));
     }
     p
 }
@@ -326,6 +353,8 @@ pub struct Look {
     pub light: f64,
     /// Wind strength, 0..1: the hair flutters in it.
     pub wind: f64,
+    /// Breathing in, as in `Motion`: the chest fills out.
+    pub breath: f64,
 }
 
 /// Points on Konrad that the game needs.
@@ -543,6 +572,10 @@ enum Part {
     /// Velour: the fabric colour with a soft lighter sheen along its edges.
     Velour(BezPath, Color),
     Line(BezPath, Color, f64),
+    /// Parts until the matching `FadeEnd` are drawn as one group at this
+    /// opacity, within the given bounds.
+    FadeStart(f32, Rect),
+    FadeEnd,
 }
 
 /// An open smooth curve through `points` (Catmull-Rom).
@@ -558,9 +591,10 @@ fn smooth_open(points: &[Point]) -> BezPath {
     path
 }
 
-/// Draws Konrad. With `hair_image` (the texture the hair shader renders
-/// into) his hair is drawn as shader-lit strands, otherwise as vector locks.
-pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&ImageData>) -> Anchors {
+/// Draws Konrad. With an image in `hair` (the texture the hair shader
+/// renders into) his hair is drawn as shader-lit strands, over the vector
+/// locks if those are on too.
+pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> Anchors {
     let cam = canvas.camera;
     let pt = |p: DVec3| cam.point(p);
     let k = (s.root.scale.x + s.root.scale.y + s.root.scale.z) / 3.0;
@@ -632,16 +666,18 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
     // hem, a ribbed collar and a zip down the front.
     let hem_bottom = s.at(PELVIS, DVec3::new(0.0, 0.04, 0.0));
     let hem_top = s.at(PELVIS, DVec3::new(0.0, 0.1, 0.0));
+    // Breathing in fills out the chest and belly and lifts the shoulders.
+    let b = look.breath;
     let jacket = limb(
-        &[pt(hem_bottom), pt(s.pos[SPINE]), pt(s.pos[CHEST]), pt(s.at(CHEST, DVec3::new(0.0, 0.06, 0.0)))],
-        &[0.235, 0.215, 0.26 * (1.0 + 0.05 * breath(look.time)), 0.21].map(|w| w * px),
+        &[pt(hem_bottom), pt(s.pos[SPINE]), pt(s.pos[CHEST]), pt(s.at(CHEST, DVec3::new(0.0, 0.06 + 0.012 * b, 0.0)))],
+        &[0.235, 0.215 * (1.0 + 0.04 * b), 0.26 * (1.0 + 0.1 * b), 0.21 * (1.0 + 0.04 * b)].map(|w| w * px),
     );
     parts.push(Part::Velour(jacket, VELOUR));
     parts.push(Part::Fill(band(pt(hem_bottom), pt(hem_top), 0.24 * px), RIB));
     let collar_c = s.at(CHEST, DVec3::new(0.0, 0.08, 0.03));
     // The zip runs down the front edge of the jacket.
     let front = |p: DVec3, reach: f64| p + s.rot[CHEST] * DVec3::new(0.0, 0.0, reach);
-    let zip = smooth_open(&[pt(front(collar_c, 0.04)), pt(front(s.pos[CHEST], 0.115)), pt(front(s.pos[SPINE], 0.1)), pt(front(hem_top, 0.105))]);
+    let zip = smooth_open(&[pt(front(collar_c, 0.04)), pt(front(s.pos[CHEST], 0.115 + 0.013 * b)), pt(front(s.pos[SPINE], 0.1)), pt(front(hem_top, 0.105))]);
     parts.push(Part::Line(zip, RIB, 0.012 * px));
     let pull = Ellipse::new(pt(front(collar_c, 0.05)) + Vec2::new(0.0, 0.03 * px), (0.012 * px, 0.022 * px), 0.0);
     parts.push(Part::Fill(pull.to_path(0.1), ZIP));
@@ -667,16 +703,24 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
     // The hair swings round after his head when he turns.
     let hair_fwd = Vec2::new(-up.y, up.x) * look.hair_facing.clamp(-1.0, 1.0);
     let mut hair_frame = None;
-    match hair_image {
-        Some(image) => {
-            let frame = hair_strands(look, head_c, hair_fwd, fwd, up, head_px);
-            head_parts.push(Part::Image(image.clone(), frame.transform()));
-            hair_frame = Some(frame);
-        }
-        None => {
-            // The vector locks need a dark mass behind them to look full.
+    if let Some(image) = hair.image {
+        let frame = hair_strands(look, head_c, hair_fwd, fwd, up, head_px);
+        head_parts.push(Part::Image(image.clone(), frame.transform()));
+        hair_frame = Some(frame);
+    }
+    if hair.locks {
+        let locks = hair_locks(look, head_c, hair_fwd, up, head_px);
+        if hair.image.is_some() {
+            // Over the strands, half see-through, so both show.
+            let bounds = Rect::from_center_size(head_c, (head_px * 1.2, head_px * 1.2));
+            head_parts.push(Part::FadeStart(0.5, bounds));
+            head_parts.extend(locks);
+            head_parts.push(Part::FadeEnd);
+        } else {
+            // On their own, the locks need a dark mass behind them to look
+            // full.
             head_parts.insert(1, Part::Fill(hair_mass(look, head_c, up, head_px), HAIR_DARK));
-            head_parts.extend(hair_locks(look, head_c, hair_fwd, up, head_px));
+            head_parts.extend(locks);
         }
     }
     // The ribbed collar wraps the bottom of the neck.
@@ -746,6 +790,8 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
                     let stroke = Stroke::new(*width).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);
                     scene.stroke(&stroke, id, *color, None, path);
                 }
+                Part::FadeStart(alpha, bounds) => scene.push_layer(Fill::NonZero, vello::peniko::Mix::Normal, *alpha, id, bounds),
+                Part::FadeEnd => scene.pop_layer(),
             }
         }
         if let Some(eye) = &eye {

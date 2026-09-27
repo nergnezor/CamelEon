@@ -12,6 +12,7 @@ use vello::util::RenderContext;
 
 use crate::frame::{FrameRenderer, Layers};
 use crate::game::Game;
+use crate::hair::{HairMode, HairStyle};
 
 /// Default image size; override with e.g. `CAMEL_EON_SIZE=1080x2400`.
 const DEFAULT_SIZE: (u32, u32) = (1280, 720);
@@ -63,8 +64,12 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     let device = &context.devices[dev_id].device;
     let queue = &context.devices[dev_id].queue;
     let mut renderer = FrameRenderer::new(device)?;
-    // Shader hair unless `CAMEL_EON_HAIR=vector`.
-    renderer.shader_hair = std::env::var("CAMEL_EON_HAIR").as_deref() != Ok("vector");
+    // Hair: `CAMEL_EON_HAIR=shader`, `vector` or `both` (the default).
+    renderer.hair_mode = match std::env::var("CAMEL_EON_HAIR").as_deref() {
+        Ok("shader") => HairMode::Shader,
+        Ok("vector") => HairMode::Vector,
+        _ => HairMode::Both,
+    };
     let (width, height) = std::env::var("CAMEL_EON_SIZE")
         .ok()
         .and_then(|v| {
@@ -81,7 +86,8 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     let start = web_time::Instant::now();
     for _ in 0..runs {
         layers = Layers::default();
-        game.draw(&mut layers, width as f64, height as f64, renderer.hair_image().as_ref());
+        let image = renderer.hair_image();
+        game.draw(&mut layers, width as f64, height as f64, HairStyle { image: image.as_ref(), locks: renderer.hair_locks() });
     }
     drop(layers);
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);

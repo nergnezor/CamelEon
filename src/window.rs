@@ -233,7 +233,7 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::KeyX | KeyCode::KeyJ) => input.tongue = pressed,
                     PhysicalKey::Code(KeyCode::Escape) if !cfg!(target_arch = "wasm32") => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::KeyH) if pressed && !event.repeat => {
-                        state.frame.shader_hair = !state.frame.shader_hair;
+                        state.frame.hair_mode = state.frame.hair_mode.next();
                     }
                     PhysicalKey::Code(KeyCode::KeyC) if pressed && !event.repeat => {
                         self.game.weather.cycle_mode();
