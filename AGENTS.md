@@ -2,7 +2,7 @@
 
 Guidance for coding agents working on **Camel Eon**, a 2.5D jungle platformer
 in Rust. The hero, Konrad (Flashback-inspired, purple velour tracksuit, big
-blue shader-rendered hair), runs, jumps, climbs and swings through the jungle.
+blue shader-rendered hair), runs and jumps through the jungle.
 Graphics are GPU vector graphics (Vello on wgpu), not sprites. It runs in a
 window on desktop, on the web (WebGPU), and in the kitty terminal.
 
@@ -50,8 +50,8 @@ is the first thing to rule out.
 `--snapshot OUT.ppm 'SCRIPT'` runs the game headless with scripted input and
 saves the last frame (convert with e.g. `magick out.ppm out.png`).
 
-- Script steps: `KEYS:seconds`, where KEYS is any of `L R U D J T` (left,
-  right, up, down, jump, tongue) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
+- Script steps: `KEYS:seconds`, where KEYS is any of `L R J` (left, right,
+  jump) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
   Keys are held for the step and released at the next one (jump fires on
   release, or by itself once fully charged after 0.2 s).
 - `@N` warps to checkpoint N first, e.g. `@4 R:0.7` (open ground, high speed).
@@ -74,12 +74,12 @@ running.
 | File | Role |
 |---|---|
 | `game.rs` | Game state and update loop: player, camera (look-ahead and zoom with speed), hair spring, breathing, effects; `draw` fills the layers |
-| `player.rs` | Movement: running with momentum boost, charged jump, coyote time, climbing, tongue grappling and swinging |
-| `level.rs` | Level layout: blocks, climbables, hooks, checkpoints |
-| `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch, climb, swing), drawing in a fixed layer order, hair strands and beard |
+| `player.rs` | Movement: running with momentum boost, charged jump, coyote time, catching flies |
+| `level.rs` | Level layout: blocks, trees, flies, checkpoints |
+| `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch), drawing in a fixed layer order, hair strands and beard |
 | `rig.rs` | Bones, poses (slerp blending) and forward kinematics |
 | `canvas3d.rs` | Perspective camera and painter's-sorted 3D drawing onto a Vello scene |
-| `jungle.rs` | Parallax background, trees, vines, energy cells, global wind |
+| `jungle.rs` | Parallax background, platforms with grass, trees, near foreground, energy cells, global wind |
 | `weather.rs` | Rain, wind gusts, fog, pit mist, leaves, fireflies, birds |
 | `paint.rs` | Drawing helpers and detail levels |
 | `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |

@@ -15,16 +15,10 @@ use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 pub enum Sfx {
     /// A footfall; `speed` 0..1 from a jog to flat out.
     Step { speed: f32 },
-    /// A hand or foot on a vine or trunk.
-    Climb,
     /// Leaving the ground; `power` 0..1 from a hop to a full charge.
     Jump { power: f32 },
     /// Touching down at `speed` (world units per second, downwards).
     Land { speed: f32 },
-    /// The grappling line shoots out.
-    Tongue,
-    /// It hooks onto a flower.
-    Grab,
     /// A fly caught.
     Gulp,
     Checkpoint,
@@ -40,7 +34,7 @@ pub enum Sfx {
 pub struct Ambience {
     pub rain: f32,
     pub wind: f32,
-    /// Air rushing past when he runs fast, flies or swings.
+    /// Air rushing past when he runs fast or flies through the air.
     pub rush: f32,
 }
 
@@ -415,10 +409,6 @@ impl Synth {
                 self.add(Voice { len: 0.12, decay: 0.035, tone: 0.2 + 0.15 * speed, f0: 120.0 * pitch, f1: 55.0, glide: 0.05, ..Voice::default() });
                 self.add(Voice { len: 0.1, decay: 0.025, noise: 0.18 + 0.15 * speed, n0: crunch, n1: crunch * 0.6, q: 1.3, glide: 0.05, ..Voice::default() });
             }
-            Sfx::Climb => {
-                let at = r.range(1500.0, 2600.0);
-                self.add(Voice { len: 0.15, attack: 0.02, decay: 0.04, noise: 0.18, n0: at, n1: at * 1.3, q: 0.8, ..Voice::default() });
-            }
             Sfx::Jump { power } => {
                 self.add(Voice { len: 0.25, decay: 0.08, wave: Wave::Triangle, tone: 0.13, f0: 180.0, f1: 420.0 + 300.0 * power, glide: 0.12, ..Voice::default() });
                 self.add(Voice { len: 0.25, attack: 0.02, decay: 0.08, noise: 0.25 + 0.15 * power, n0: 500.0, n1: 1800.0, q: 1.2, glide: 0.15, ..Voice::default() });
@@ -427,15 +417,6 @@ impl Synth {
                 let hard = ((speed - 3.0) / 18.0).clamp(0.0, 1.0);
                 self.add(Voice { len: 0.3, decay: 0.07 + 0.05 * hard, tone: 0.25 + 0.45 * hard, f0: 140.0, f1: 45.0, glide: 0.09, ..Voice::default() });
                 self.add(Voice { len: 0.2, decay: 0.04 + 0.03 * hard, noise: 0.2 + 0.45 * hard, n0: 900.0, n1: 350.0, q: 0.8, glide: 0.1, ..Voice::default() });
-            }
-            Sfx::Tongue => {
-                // A zip: the line whipping out.
-                self.add(Voice { len: 0.18, attack: 0.01, decay: 0.05, noise: 0.3, n0: 1200.0, n1: 4500.0, q: 2.0, glide: 0.1, ..Voice::default() });
-                self.add(Voice { len: 0.12, decay: 0.04, tone: 0.07, f0: 700.0, f1: 1800.0, glide: 0.08, ..Voice::default() });
-            }
-            Sfx::Grab => {
-                self.add(Voice { len: 0.5, decay: 0.12, wave: Wave::Bell, tone: 0.16, f0: 1450.0, f1: 1450.0, ..Voice::default() });
-                self.add(Voice { len: 0.05, decay: 0.008, noise: 0.4, n0: 3000.0, n1: 3000.0, q: 1.0, ..Voice::default() });
             }
             Sfx::Gulp => {
                 // Blip-bloop, and a sparkle.

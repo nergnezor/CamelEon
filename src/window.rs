@@ -233,10 +233,7 @@ impl ApplicationHandler<UserEvent> for App {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::ArrowLeft | KeyCode::KeyA) => input.left = pressed,
                     PhysicalKey::Code(KeyCode::ArrowRight | KeyCode::KeyD) => input.right = pressed,
-                    PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::KeyW) => input.up = pressed,
-                    PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::KeyS) => input.down = pressed,
-                    PhysicalKey::Code(KeyCode::Space | KeyCode::KeyZ) => input.jump = pressed,
-                    PhysicalKey::Code(KeyCode::KeyX | KeyCode::KeyJ) => input.tongue = pressed,
+                    PhysicalKey::Code(KeyCode::Space | KeyCode::KeyZ | KeyCode::ArrowUp | KeyCode::KeyW) => input.jump = pressed,
                     PhysicalKey::Code(KeyCode::Escape) if !cfg!(target_arch = "wasm32") => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::KeyH) if pressed && !event.repeat => {
                         state.frame.hair_mode = state.frame.hair_mode.next();

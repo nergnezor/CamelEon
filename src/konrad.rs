@@ -1,8 +1,7 @@
 //! Konrad: the hero, an agent in the style of early-90s cinematic platformers
 //! (think Flashback): realistic proportions, smooth lifelike movement, and flat
 //! colour shading without outlines. Big blue hair, a purple velour tracksuit
-//! with white side stripes, and white sneakers. He fires a grappling line
-//! from his right hand.
+//! with white side stripes, and white sneakers.
 //!
 //! Konrad is a 3D rig (see `rig`) drawn as a few smooth 2D body shapes over
 //! the projected skeleton, in a fixed back-to-front order.
@@ -105,7 +104,7 @@ pub fn skeleton() -> Skeleton {
 #[derive(Clone, Copy, Default)]
 pub struct Motion {
     pub time: f64,
-    /// Advances with distance walked or climbed; drives limb cycles.
+    /// Advances with distance run; drives limb cycles.
     pub stride: f64,
     /// 0 when standing still, 1 at full running speed.
     pub run: f64,
@@ -117,12 +116,6 @@ pub struct Motion {
     pub crouch: f64,
     /// Breathing in, 0 (out) to 1 (in), a bit more when winded.
     pub breath: f64,
-    pub climbing: bool,
-    pub swinging: bool,
-    /// The grappling line is out (the right arm points along it).
-    pub grappling: bool,
-    /// Where the grappling line goes, relative to the shoulder, in world space.
-    pub aim: DVec3,
 }
 
 /// Blends between animation clips.
@@ -130,9 +123,6 @@ pub struct Motion {
 pub struct Animator {
     run: f64,
     air: f64,
-    climb: f64,
-    swing: f64,
-    aim: f64,
     crouch: f64,
 }
 
@@ -141,39 +131,21 @@ impl Animator {
         if dt <= 0.0 {
             return;
         }
-        let (air, climb, swing) = (
-            (m.airborne && !m.climbing && !m.swinging) as u8 as f64,
-            m.climbing as u8 as f64,
-            m.swinging as u8 as f64,
-        );
-        let run = if air + climb + swing > 0.0 { 0.0 } else { m.run };
+        let air = m.airborne as u8 as f64;
+        let run = if m.airborne { 0.0 } else { m.run };
         let k = 1.0 - (-dt * 10.0).exp();
         self.run += (run - self.run) * k;
         self.air += (air - self.air) * k;
-        self.climb += (climb - self.climb) * k;
-        self.swing += (swing - self.swing) * k;
         // Quick into the crouch and quicker out of it on the leap.
         let rate = if m.crouch > self.crouch { 25.0 } else { 40.0 };
         self.crouch += (m.crouch - self.crouch) * (1.0 - (-dt * rate).exp());
-        let aim = (m.grappling && !m.climbing) as u8 as f64;
-        self.aim += (aim - self.aim) * (1.0 - (-dt * 20.0).exp());
     }
 
     pub fn pose(&self, m: &Motion) -> Pose {
         let mut pose = idle(m);
         pose.blend(&run(m), self.run);
         pose.blend(&air(m), self.air);
-        pose.blend(&climb(m), self.climb);
-        pose.blend(&swing(m), self.swing);
         pose.blend(&crouch(), self.crouch);
-        if self.aim > 0.0 {
-            // Point the right arm along the grappling line.
-            let local = (m.heading.inverse() * m.aim).normalize_or(DVec3::Y);
-            let mut aimed = pose.clone();
-            aimed.rot[SHOULDER_R] = DQuat::from_rotation_arc(DVec3::NEG_Y, local);
-            aimed.rot[ELBOW_R] = rx(-0.1);
-            pose.blend(&aimed, self.aim);
-        }
         pose
     }
 }
@@ -300,38 +272,6 @@ fn crouch() -> Pose {
     p
 }
 
-/// Hand over hand, feet finding holds.
-fn climb(m: &Motion) -> Pose {
-    let mut p = Pose::rest(COUNT);
-    let s = m.stride;
-    p.rotate(HEAD, rx(-0.25));
-    for (shoulder, elbow, hip, knee, phase, side) in [
-        (SHOULDER_L, ELBOW_L, HIP_L, KNEE_L, 0.0, -1.0),
-        (SHOULDER_R, ELBOW_R, HIP_R, KNEE_R, PI, 1.0),
-    ] {
-        let reach = (s + phase).sin();
-        p.rotate(shoulder, rx(-2.7 - reach * 0.35) * rz(side * 0.25));
-        p.rotate(elbow, rx(-0.4 + reach * 0.5));
-        p.rotate(hip, rx(-0.7 + reach * 0.45) * rz(side * 0.2));
-        p.rotate(knee, rx(1.0 - reach * 0.5));
-    }
-    p
-}
-
-/// Hanging from the line: legs trailing with the swing.
-fn swing(m: &Motion) -> Pose {
-    let mut p = Pose::rest(COUNT);
-    let sway = (m.vel.x * 0.04).clamp(-0.6, 0.6);
-    p.rotate(SPINE, rx(-sway * 0.3));
-    p.rotate(SHOULDER_L, rz(-0.5) * rx(-0.4));
-    p.rotate(ELBOW_L, rx(-0.6));
-    for (hip, knee, side) in [(HIP_L, KNEE_L, -1.0), (HIP_R, KNEE_R, 1.0)] {
-        p.rotate(hip, rx(sway - 0.25 + (m.time * 3.0 + side).sin() * 0.1));
-        p.rotate(knee, rx(0.4));
-    }
-    p
-}
-
 /// Solves the pose and, when Konrad is standing, moves him down or up so the
 /// soles rest on the ground (bent knees would otherwise lift the feet).
 pub fn plant(skeleton: &Skeleton, pose: &Pose, root: Root, grounded: bool) -> Solved {
@@ -368,14 +308,6 @@ pub struct Look {
     pub camo: f64,
     /// The camouflage's ground colour and the colour of its blotches.
     pub camo_colors: (Color, Color),
-}
-
-/// Points on Konrad that the game needs.
-pub struct Anchors {
-    /// Where the grappling line leaves his hand.
-    pub hand: DVec3,
-    /// Hair strands for the shader pass, when shader hair is on.
-    pub hair: Option<HairFrame>,
 }
 
 /// Colour for the limbs on the far side: a touch darker and cooler.
@@ -637,8 +569,8 @@ fn smooth_open(points: &[Point]) -> BezPath {
 
 /// Draws Konrad. With an image in `hair` (the texture the hair shader
 /// renders into) his hair is drawn as shader-lit strands, over the vector
-/// locks if those are on too.
-pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> Anchors {
+/// locks if those are on too; the strands for the hair pass are returned.
+pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> Option<HairFrame> {
     let cam = canvas.camera;
     let pt = |p: DVec3| cam.point(p);
     let k = (s.root.scale.x + s.root.scale.y + s.root.scale.z) / 3.0;
@@ -855,10 +787,7 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
         scene.stroke(&Stroke::new(line_w).with_caps(vello::kurbo::Cap::Round), id, FEATURE, None, &details);
     });
 
-    Anchors {
-        hand: s.at(HAND_R, DVec3::new(0.0, -0.09, 0.0)),
-        hair: hair_frame,
-    }
+    hair_frame
 }
 
 /// The dark mass under the big hair. It follows the hair's lagging facing
@@ -1073,9 +1002,8 @@ fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, face_fwd: Vec2, up: Vec2,
 
 /// Model-to-world rotation for a heading: `facing` 1 = right, −1 = left, with
 /// values in between turning through the camera (a 3/4 view at the ends).
-pub fn heading(facing: f64, away: f64) -> DQuat {
-    let side = DQuat::from_rotation_y(PI - facing * 1.2);
-    side.slerp(DQuat::from_rotation_y(0.0), away)
+pub fn heading(facing: f64) -> DQuat {
+    DQuat::from_rotation_y(PI - facing * 1.2)
 }
 
 /// Konrad's root: `squash` > 0 stretches up (jumping), < 0 squashes (landing);

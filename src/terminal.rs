@@ -95,10 +95,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
             match key.code {
                 KeyCode::Left | KeyCode::Char('a') => game.input.left = pressed,
                 KeyCode::Right | KeyCode::Char('d') => game.input.right = pressed,
-                KeyCode::Up | KeyCode::Char('w') => game.input.up = pressed,
-                KeyCode::Down | KeyCode::Char('s') => game.input.down = pressed,
-                KeyCode::Char(' ') | KeyCode::Char('z') => game.input.jump = pressed,
-                KeyCode::Char('x') | KeyCode::Char('j') => game.input.tongue = pressed,
+                KeyCode::Char(' ') | KeyCode::Char('z') | KeyCode::Up | KeyCode::Char('w') => game.input.jump = pressed,
                 KeyCode::Char('m') if key.kind == KeyEventKind::Press => audio.toggle_mute(),
                 KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {

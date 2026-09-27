@@ -1,8 +1,7 @@
 //! Gamepad input via gilrs (Linux, Windows, macOS and the web).
 //!
 //! Layout (Xbox names, PlayStation in brackets):
-//! left stick / d-pad: move and climb, A [Cross]: jump,
-//! X [Square], B [Circle] or right trigger: tongue.
+//! left stick / d-pad: run, A [Cross]: jump.
 
 use gilrs::{Axis, Button, Gilrs};
 
@@ -34,27 +33,17 @@ impl Gamepads {
         let Some(gilrs) = &mut self.gilrs else { return input };
         while gilrs.next_event().is_some() {}
         for (_, pad) in gilrs.gamepads() {
-            // Radial deadzone, rescaled so the stick goes smoothly from 0 to 1.
-            let (x, y) = (pad.value(Axis::LeftStickX) as f64, pad.value(Axis::LeftStickY) as f64);
-            let len = x.hypot(y);
-            if len > STICK_DEADZONE {
-                let k = ((len - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)).min(1.0) / len;
-                if (x * k).abs() > input.stick_x.abs() {
-                    input.stick_x = x * k;
-                }
-                if (y * k).abs() > input.stick_y.abs() {
-                    input.stick_y = y * k;
+            // Deadzone, rescaled so the stick goes smoothly from 0 to 1.
+            let x = pad.value(Axis::LeftStickX) as f64;
+            if x.abs() > STICK_DEADZONE {
+                let x = x.signum() * ((x.abs() - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)).min(1.0);
+                if x.abs() > input.stick_x.abs() {
+                    input.stick_x = x;
                 }
             }
             input.left |= pad.is_pressed(Button::DPadLeft);
             input.right |= pad.is_pressed(Button::DPadRight);
-            input.up |= pad.is_pressed(Button::DPadUp);
-            input.down |= pad.is_pressed(Button::DPadDown);
             input.jump |= pad.is_pressed(Button::South);
-            input.tongue |= pad.is_pressed(Button::West)
-                || pad.is_pressed(Button::East)
-                || pad.is_pressed(Button::RightTrigger)
-                || pad.is_pressed(Button::RightTrigger2);
         }
         input
     }
