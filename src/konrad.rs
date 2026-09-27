@@ -842,42 +842,82 @@ fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -
     let trail = -(speed * 0.004).min(0.09);
     let bounce = (look.stride * 2.0).sin() * 0.012 * (speed / 14.0).min(1.0) - (look.vel.y * 0.002).clamp(-0.04, 0.04);
 
-    let count = 850;
-    let mut strands = Vec::with_capacity(count);
+    // Standing still, the hair settles under its own weight.
+    let droop = 0.07 * (1.0 - (speed / 6.0).min(1.0));
+
+    // Each strand sways on its own, more in the wind, with a faster flutter
+    // towards the tip (across `dir`), and follows the simulated swing a bit
+    // differently. Returns the offset at `t` along the strand, in pixels.
+    let motion = |i: usize, t: f64, dir: Vec2| {
+        let (phase, gain) = (i as f64 * 0.37, 0.01 + 0.06 * look.wind);
+        let sway = Vec2::new((look.time * 2.1 + phase).sin() * gain, (look.time * 1.6 + phase * 1.7).cos() * gain * 0.5);
+        let flutter = (look.time * 7.0 + i as f64 * 1.9 + t * 3.0).sin() * (0.004 + 0.025 * look.wind);
+        let across = Vec2::new(-dir.y, dir.x) * flutter;
+        let fall = Vec2::new(trail + sway.x, bounce - 0.02 - droop + sway.y) + across;
+        let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * (0.7 + 0.6 * rand(i, 9));
+        (fwd * fall.x + up * fall.y) * head_px * (t * t) + swing * head_px * (t * t)
+    };
+    let [hr, hg, hb, _] = HAIR.components;
+    let color = |shade: f64| [hr * shade as f32, hg * shade as f32, hb * shade as f32];
+
+    // The big mane round the outline of the head, back to front. The front
+    // of it starts above the brow and sweeps back, clear of the eyes.
+    let count = 640;
+    let mut strands = Vec::with_capacity(count + 260);
     for i in 0..count {
         let layer = i as f64 / count as f64; // 0 = back, 1 = front
-        let fringe = rand(i, 1) < 0.1;
-        let root = if fringe { 0.55 + rand(i, 2) * 0.45 } else { 0.8 + rand(i, 2) * 2.9 };
-        let curl = if fringe { -0.4 - rand(i, 3) * 0.35 } else { 0.1 + rand(i, 3) * 0.6 };
-        let reach = if fringe { 1.2 + rand(i, 4) * 0.3 } else { 1.5 + rand(i, 4) * 0.85 } * (0.85 + 0.15 * layer);
-        // Each strand sways on its own, more in the wind, with a faster
-        // flutter towards the tip. Offsets are in head units.
-        let (phase, gain) = (i as f64 * 0.37, 0.035 + 0.09 * look.wind);
-        let sway = (
-            (look.time * 2.1 + phase).sin() * gain,
-            (look.time * 1.6 + phase * 1.7).cos() * gain * 0.5,
-        );
-        let flutter = |t: f64| (look.time * 7.0 + i as f64 * 1.9 + t * 3.0).sin() * (0.012 + 0.03 * look.wind) * t * t;
-        // Each strand follows the simulated swing a bit differently.
-        let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px * (0.7 + 0.6 * rand(i, 9));
+        let quiff = rand(i, 1) < 0.1;
+        let root = if quiff { 0.85 + rand(i, 2) * 0.3 } else { 0.95 + rand(i, 2) * 2.75 };
+        let curl = if quiff { 0.2 + rand(i, 3) * 0.3 } else { 0.1 + rand(i, 3) * 0.6 };
+        let reach = if quiff { 1.3 + rand(i, 4) * 0.3 } else { 1.5 + rand(i, 4) * 0.85 } * (0.85 + 0.15 * layer);
         let points: Vec<Point> = (0..8)
             .map(|j| {
                 let t = j as f64 / 7.0;
                 let a = root + curl * t;
                 let r = 0.95 + (reach - 0.95) * (1.0 - (1.0 - t) * (1.0 - t));
                 let (x, y) = on_head(a, r);
-                let (sx, sy) = (sway.0 * t * t + flutter(t) * a.sin(), sway.1 * t * t - flutter(t) * a.cos());
-                at(x + trail * t * t + sx, y + (bounce - 0.02) * t * t + sy) + swing * (t * t)
+                at(x, y) + motion(i, t, Vec2::new(a.cos(), a.sin()))
             })
             .collect();
-        let shade = 0.55 + 0.45 * layer + (rand(i, 5) - 0.5) * 0.2;
-        let [r, g, b, _] = HAIR.components;
         strands.push(Strand {
             points,
             width: head_px * (0.016 + rand(i, 6) * 0.012),
-            color: [r * shade as f32, g * shade as f32, b * shade as f32],
+            color: color(0.55 + 0.45 * layer + (rand(i, 5) - 0.5) * 0.2),
             seed: rand(i, 7) as f32,
         });
+    }
+
+    // Shorter hair over the side of the skull, above and behind the ear,
+    // combed back and down. Drawn last, as it's on the near side.
+    let mut i = count;
+    let mut tries = 0;
+    while strands.len() < count + 260 && tries < 4000 {
+        tries += 1;
+        let k = count + tries;
+        let (a, rho) = (1.0 + rand(k, 2) * 2.6, 0.25 + rand(k, 3) * 0.7);
+        let (x0, y0) = on_head(a, rho);
+        // Keep the temple and the ear clear.
+        if x0 > 0.035 || (y0 < 0.06 && x0 > -0.04) {
+            continue;
+        }
+        let bend = -3.4 + rand(k, 4) * 0.9; // pointing back and down
+        let dir = Vec2::new(bend.cos(), bend.sin());
+        let len = 0.07 + rand(k, 5) * 0.07;
+        let curve = (rand(k, 6) - 0.5) * 0.04;
+        let points: Vec<Point> = (0..6)
+            .map(|j| {
+                let t = j as f64 / 5.0;
+                let (x, y) = (x0 + dir.x * len * t - dir.y * curve * t * t, y0 + dir.y * len * t + dir.x * curve * t * t);
+                at(x, y) + motion(i, t, dir) * 0.6
+            })
+            .collect();
+        strands.push(Strand {
+            points,
+            width: head_px * (0.013 + rand(k, 7) * 0.008),
+            color: color(0.8 + 0.25 * rho + (rand(k, 8) - 0.5) * 0.2),
+            seed: rand(k, 9) as f32,
+        });
+        i += 1;
     }
     let center = at(-0.05, 0.12);
     let size = 0.72 * head_px;
