@@ -368,6 +368,8 @@ fn hot<R>(f: impl FnMut() -> R) -> R {
 
 pub(crate) fn show_error(err: &str) {
     eprintln!("camel-eon: {err}");
+    #[cfg(target_os = "android")]
+    crate::log_error(err);
     #[cfg(target_arch = "wasm32")]
     if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
         let help = if err.starts_with("failed to create") {

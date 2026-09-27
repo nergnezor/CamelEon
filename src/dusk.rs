@@ -8,7 +8,12 @@
 //! projected along the sunlight onto the platform tops (see `shadow_path`),
 //! so they move with the running figure and stretch over the roofs.
 //!
-//! The sky itself is drawn by the composite shader (see `frame`).
+//! The sky itself is drawn by a shader (see `frame`).
+//!
+//! On slow devices the detail levels (`paint::detail`) thin things out:
+//! level 1 drops small clutter (windows in the skylines, rubble, weeds,
+//! stains, creepers, dust, half the traffic), level 2 also the airship,
+//! the traffic, the foreground and the industry's lights and steam.
 
 use std::f64::consts::TAU;
 
@@ -141,11 +146,16 @@ fn steam(scene: &mut Scene, at: Point, r: f64, phase: f64) {
 /// line, air traffic and the industry behind the roofs. `cam`, `w` and `h`
 /// describe the (half-resolution) layer images.
 pub fn draw_background(far: &mut Scene, mid: &mut Scene, cam: &Camera, w: f64, h: f64, time: f64) {
+    let detail = crate::paint::detail();
     draw_mesas(far, cam, w, h);
     draw_skyline(far, cam, w, time, &SKYLINES[0]);
-    draw_airship(far, cam, time);
+    if detail < 2 {
+        draw_airship(far, cam, time);
+    }
     draw_skyline(far, cam, w, time, &SKYLINES[1]);
-    draw_traffic(mid, cam, w, time);
+    if detail < 2 {
+        draw_traffic(mid, cam, w, time);
+    }
     draw_maglev(mid, cam, w, time);
     draw_industry(mid, cam, w, h, time);
 }
@@ -301,7 +311,7 @@ fn draw_skyline(scene: &mut Scene, cam: &Camera, w: f64, time: f64, sky: &Skylin
             lit.close_path();
             // Lit windows, scattered.
             let (qy0, qy1) = (q[0].y.max(cam.eye.y - 40.0), q[3].y.min(q[2].y));
-            let mut y = qy0 + 1.0;
+            let mut y = if crate::paint::detail() > 0 { qy1 } else { qy0 + 1.0 };
             let mut row = 0i64;
             while y < qy1 - 1.0 {
                 let t = (y - q[0].y) / (q[3].y - q[0].y).max(1e-6);
@@ -409,7 +419,8 @@ fn draw_traffic(scene: &mut Scene, cam: &Camera, w: f64, time: f64) {
         let fog = ((z - 20.0) / 60.0).clamp(0.0, 0.6);
         let body = mix(Color::from_rgb8(0x24, 0x18, 0x30), HAZE, fog);
         let seed = 300 + li as u64;
-        for k in 0..6i64 {
+        let cars = if crate::paint::detail() > 0 { 3 } else { 6 };
+        for k in 0..cars {
             if hash(k, seed) < 0.3 {
                 continue;
             }
@@ -686,6 +697,9 @@ fn draw_industry(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f64) {
     scene.fill(Fill::NonZero, Affine::IDENTITY, dark, None, &body);
     scene.fill(Fill::NonZero, Affine::IDENTITY, lit_color.with_alpha(0.75), None, &lit);
     scene.stroke(&Stroke::new((0.22 * s).max(1.0)), Affine::IDENTITY, dark, None, &lines);
+    if crate::paint::detail() >= 2 {
+        return;
+    }
     for (at, r, phase) in puffs {
         steam(scene, at, r, phase);
     }
@@ -913,8 +927,13 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
         draw_beacon(canvas, c, i <= view.checkpoint, view.time);
     }
     draw_teleporter(canvas, level.goal, view.time);
-    draw_motes(canvas, view.screen_width, view.time);
-    draw_foreground(canvas, view.screen_width, view.time);
+    let detail = crate::paint::detail();
+    if detail < 1 {
+        draw_motes(canvas, view.screen_width, view.time);
+    }
+    if detail < 2 {
+        draw_foreground(canvas, view.screen_width, view.time);
+    }
 }
 
 /// Draws a platform: a building's roof and facade, a cargo container, a
@@ -929,6 +948,8 @@ fn draw_block(canvas: &mut Canvas3d, blocks: &[Block], b: &Block, visible: (f64,
     let catwalk = b.kind == BlockKind::Log;
     let plinth = !building && !catwalk && b.y1 - b.y0 < 0.7;
     let glass = building && b.kind == BlockKind::Stone;
+    // Small clutter goes first on slow devices.
+    let clutter = crate::paint::detail() == 0;
     let paint = PAINTS[(hash(seed as i64, 3) * 4.0) as usize % 4];
     let (top, front, lit_side, dark_side) = if building {
         (CONCRETE_TOP, if glass { GLASS } else { CONCRETE_FRONT }, CONCRETE_LIT, CONCRETE_DARK)
@@ -1105,7 +1126,7 @@ fn draw_block(canvas: &mut Canvas3d, blocks: &[Block], b: &Block, visible: (f64,
                         dark_windows.extend(r.iter());
                     }
                     // Grime running down from the sill.
-                    if !glass && hash(key, seed ^ 13) < 0.35 {
+                    if clutter && !glass && hash(key, seed ^ 13) < 0.35 {
                         let sx = wx + 0.2 + 0.5 * hash(key, seed ^ 14);
                         let len = 0.5 + 1.8 * hash(key, seed ^ 15);
                         let streak = rect_path(p(sx, wy - wh - len, b.z0), p(sx + 0.07 + 0.08 * hash(key, seed ^ 16), wy - wh, b.z0));
@@ -1192,7 +1213,7 @@ fn draw_block(canvas: &mut Canvas3d, blocks: &[Block], b: &Block, visible: (f64,
         // Creepers hanging from the parapet, swaying a little.
         for i in (vis0 / 2.1).floor() as i64..=(vis1 / 2.1).ceil() as i64 {
             let hs = seed ^ 90;
-            if hash(i, hs) < 0.62 {
+            if !clutter || hash(i, hs) < 0.62 {
                 continue;
             }
             let x0 = (i as f64 + hash(i, hs + 1)) * 2.1;
@@ -1332,7 +1353,7 @@ fn draw_block(canvas: &mut Canvas3d, blocks: &[Block], b: &Block, visible: (f64,
         // Stains: blobs with noisy outlines.
         for i in (tx0 / 3.7).floor() as i64..=(tx1 / 3.7).ceil() as i64 {
             let hs = seed ^ 50;
-            if hash(i, hs) < 0.35 {
+            if !clutter || hash(i, hs) < 0.35 {
                 continue;
             }
             let cx = (i as f64 + hash(i, hs + 1)) * 3.7;
@@ -1359,7 +1380,7 @@ fn draw_block(canvas: &mut Canvas3d, blocks: &[Block], b: &Block, visible: (f64,
         for i in (tx0 / 1.1).floor() as i64..=(tx1 / 1.1).ceil() as i64 {
             let hs = seed ^ 60;
             let x = (i as f64 + hash(i, hs)) * 1.1;
-            if x < b.x0 + 0.2 || x > b.x1 - 0.2 {
+            if !clutter || x < b.x0 + 0.2 || x > b.x1 - 0.2 {
                 continue;
             }
             let z = b.z0 + 0.15 + (b.z1 - b.z0 - 0.3) * hash(i, hs + 1);

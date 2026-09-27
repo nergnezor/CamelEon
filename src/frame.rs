@@ -12,8 +12,9 @@
 //!    grade (sunlight fading to dusk, vignette, sun glow, rain).
 //!
 //! In the dusk city the sky itself is a shader too: a sunset gradient, the
-//! low sun and drifting noise clouds lit from below, drawn wherever the far
-//! layer leaves a gap.
+//! low sun and drifting noise clouds lit from below. A pass before the others
+//! draws it at half resolution (the noise is costly per pixel, and clouds are
+//! soft anyway) wherever the far layer leaves a gap.
 
 use vello::peniko::{Color, ImageData};
 use vello::wgpu;
@@ -95,6 +96,7 @@ struct Uniforms {
 @group(0) @binding(3) var mid_tex: texture_2d<f32>;
 @group(0) @binding(4) var front_tex: texture_2d<f32>;
 @group(0) @binding(5) var light_tex: texture_2d<f32>;
+@group(0) @binding(6) var sky_tex: texture_2d<f32>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -114,10 +116,17 @@ fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.3, 0.59, 0.11));
 }
 
-// ---- Dusk sky ----
 // The camera looks straight ahead, so the horizon is the middle of the screen.
 const HORIZON: f32 = 0.5;
 
+// Distance to the sun in screen heights.
+fn sun_distance(uv: vec2<f32>) -> f32 {
+    return length((uv - u.sun) * vec2<f32>(u.aspect, 1.0));
+}
+"#;
+
+const SKY_WGSL: &str = r#"
+// ---- Dusk sky ----
 fn hash21(p: vec2<f32>) -> f32 {
     var q = fract(p * vec2<f32>(123.34, 456.21));
     q += dot(q, q + 45.32);
@@ -139,18 +148,13 @@ fn fbm(p: vec2<f32>) -> f32 {
     var sum = 0.0;
     var amp = 0.5;
     var q = p;
-    for (var i = 0; i < 5; i++) {
+    for (var i = 0; i < 4; i++) {
         sum += value_noise(q) * amp;
         // Rotate each octave so the lattice doesn't show.
         q = mat2x2<f32>(1.6, 1.2, -1.2, 1.6) * q + vec2<f32>(3.1, 1.7);
         amp *= 0.5;
     }
     return sum;
-}
-
-// Distance to the sun in screen heights.
-fn sun_distance(uv: vec2<f32>) -> f32 {
-    return length((uv - u.sun) * vec2<f32>(u.aspect, 1.0));
 }
 
 // The clear sky: a sunset gradient by height above the horizon, warmer and
@@ -213,14 +217,20 @@ fn dusk_sky(uv: vec2<f32>) -> vec3<f32> {
     return col;
 }
 
-// Sky brightness for the light shafts: the gradient and sun without clouds
-// (it's sampled many times per pixel).
-fn sky_light(uv: vec2<f32>) -> f32 {
-    if u.theme > 0.5 {
-        let d = sun_distance(uv);
-        return 0.4 * luma(dusk_gradient(uv)) + 1.2 * exp(-d * d * 60.0);
+// The dusk sky where the far layer doesn't cover it (the rest isn't seen).
+@fragment
+fn fs_sky(in: VertexOut) -> @location(0) vec4<f32> {
+    // Skip it only well inside the far layer: the composite blurs the far
+    // layer's edges, and the sky must be there to show through them.
+    var covered = textureSampleLevel(far_tex, smp, in.uv, 0.0).a;
+    for (var i = 0; i < 4; i++) {
+        let off = vec2<f32>(select(-4.0, 4.0, (i & 1) == 1), select(-4.0, 4.0, (i & 2) == 2)) * u.half_texel;
+        covered = min(covered, textureSampleLevel(far_tex, smp, in.uv + off, 0.0).a);
     }
-    return 0.0;
+    if covered > 0.999 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    return vec4<f32>(dusk_sky(in.uv), 1.0);
 }
 "#;
 
@@ -233,7 +243,11 @@ fn shaft_source(uv: vec2<f32>) -> f32 {
     let far = textureSampleLevel(far_tex, smp, uv, 0.0);
     // In the dusk city the far layer only holds the skyline: the sky is
     // the shader's, behind it.
-    let sky = luma(far.rgb) * select(1.0, far.a, u.theme > 0.5) + sky_light(uv) * (1.0 - far.a);
+    var sky = luma(far.rgb);
+    if u.theme > 0.5 {
+        let behind = luma(textureSampleLevel(sky_tex, smp, uv, 0.0).rgb);
+        sky = sky * far.a + behind * (1.0 - far.a);
+    }
     return (1.0 - max(mid, front)) * smoothstep(0.25, 0.75, sky);
 }
 
@@ -301,8 +315,8 @@ fn fs_composite(in: VertexOut) -> @location(0) vec4<f32> {
     let far = blurred(far_tex, uv, 2.6);
     let mid = blurred(mid_tex, uv, 1.1);
     var back = far.rgb;
-    if u.theme > 0.5 && far.a < 0.999 {
-        back += dusk_sky(uv) * (1.0 - far.a);
+    if u.theme > 0.5 {
+        back += textureSampleLevel(sky_tex, smp, uv, 0.0).rgb * (1.0 - far.a);
     }
     var col = back * (1.0 - mid.a) + mid.rgb;
     let front = textureSampleLevel(front_tex, smp, uv, 0.0);
@@ -353,11 +367,13 @@ struct Targets {
     mid: wgpu::TextureView,
     front: wgpu::TextureView,
     light: wgpu::TextureView,
+    sky: wgpu::TextureView,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     out_texture: wgpu::Texture,
     out: wgpu::TextureView,
-    /// The light pass can't read the texture it writes, so it gets its own
-    /// bind group (with the far layer standing in for the light texture).
+    /// A pass can't read the texture it writes, so each gets its own bind
+    /// group (with the far layer standing in for the texture being written).
+    sky_group: wgpu::BindGroup,
     light_group: wgpu::BindGroup,
     composite_group: wgpu::BindGroup,
 }
@@ -371,6 +387,7 @@ pub struct FrameRenderer {
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    sky: wgpu::RenderPipeline,
     light: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
 }
@@ -423,6 +440,7 @@ impl FrameRenderer {
                 texture_entry(3),
                 texture_entry(4),
                 texture_entry(5),
+                texture_entry(6),
             ],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -475,6 +493,7 @@ impl FrameRenderer {
                 cache: None,
             })
         };
+        let sky = pipeline("sky", SKY_WGSL, "fs_sky");
         let light = pipeline("light", LIGHT_WGSL, "fs_light");
         let composite = pipeline("composite", COMPOSITE_WGSL, "fs_composite");
         Ok(Self {
@@ -486,6 +505,7 @@ impl FrameRenderer {
             layout,
             uniforms,
             sampler,
+            sky,
             light,
             composite,
         })
@@ -522,9 +542,10 @@ impl FrameRenderer {
             let mid = view(texture("mid", half(width), half(height), vello_usage));
             let front = view(texture("front", width, height, vello_usage));
             let light = view(texture("light", width.div_ceil(4).max(1), height.div_ceil(4).max(1), pass_usage));
+            let sky = view(texture("sky", half(width), half(height), pass_usage));
             let out_texture = texture("frame", width, height, pass_usage | wgpu::TextureUsages::COPY_SRC);
             let out = out_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let group = |light_input: &wgpu::TextureView| {
+            let group = |light_input: &wgpu::TextureView, sky_input: &wgpu::TextureView| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("post"),
                     layout: &self.layout,
@@ -535,12 +556,14 @@ impl FrameRenderer {
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mid) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&front) },
                         wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(light_input) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(sky_input) },
                     ],
                 })
             };
-            let light_group = group(&far);
-            let composite_group = group(&light);
-            self.targets = Some(Targets { width, height, far, mid, front, light, out_texture, out, light_group, composite_group });
+            let sky_group = group(&far, &far);
+            let light_group = group(&far, &sky);
+            let composite_group = group(&light, &sky);
+            self.targets = Some(Targets { width, height, far, mid, front, light, sky, out_texture, out, sky_group, light_group, composite_group });
         }
         self.targets.as_ref().expect("targets were just created")
     }
@@ -598,7 +621,11 @@ impl FrameRenderer {
         queue.write_buffer(&self.uniforms, 0, &bytes);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("post") });
-        for (pipeline, view, group) in [(&self.light, &t.light, &t.light_group), (&self.composite, &t.out, &t.composite_group)] {
+        let mut passes = vec![(&self.light, &t.light, &t.light_group), (&self.composite, &t.out, &t.composite_group)];
+        if p.theme == Theme::Dusk {
+            passes.insert(0, (&self.sky, &t.sky, &t.sky_group));
+        }
+        for (pipeline, view, group) in passes {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

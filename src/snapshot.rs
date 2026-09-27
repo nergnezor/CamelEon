@@ -106,8 +106,13 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         let image = renderer.hair_image();
         game.draw(&mut layers, width as f64, height as f64, HairStyle { image: image.as_ref(), locks: renderer.hair_locks() });
     }
-    drop(layers);
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
+    // How much Vello has to chew on: paths, segments and clip layers.
+    for (name, scene) in [("far", &layers.far), ("mid", &layers.mid), ("front", &layers.front)] {
+        let e = scene.encoding();
+        eprintln!("{name:>6}: {} paths, {} segments, {} clips", e.n_paths, e.n_path_segments, e.n_clips);
+    }
+    drop(layers);
     // Render a fresh game first, like the window's earlier frames, so stale
     // GPU caches (e.g. the hair image in Vello's atlas) show up here too.
     let fresh = Game::with_level(level);

@@ -65,7 +65,8 @@ saves the last frame (convert with e.g. `magick out.ppm out.png`).
   `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped),
   `CAMEL_EON_WAV=out.wav` (renders the script's sound and prints its peak/RMS),
   `CAMEL_EON_LEVEL=N` (0 = the dusk city, the default; 1 = the jungle).
-- It prints the scene build time and a status line per step (position,
+- It prints the scene build time, the paths/segments/clip layers per layer
+  (what Vello has to work through), and a status line per step (position,
   velocity, state), which is handy for checking movement numerically.
 - It renders a frame of a fresh game before the real one, so stale GPU caches
   show up in snapshots too.
@@ -111,9 +112,11 @@ declared there too.
 3. Vello renders each layer to its own texture.
 4. A quarter-resolution pass does light shafts and bloom; a composite pass
    does depth of field (blurring far/mid), the dusk grade, vignette, sun glow
-   and the rain grade. In the dusk city (`Post::theme`) the sky is drawn by
-   the composite shader too: a sunset gradient, the sun and fbm clouds, behind
-   a far layer that's rendered transparent.
+   and the rain grade. In the dusk city (`Post::theme`) a sky pass runs first,
+   at half resolution: a sunset gradient, the sun and fbm clouds, only where
+   the far layer (rendered transparent) leaves gaps. The light and composite
+   passes read it from a texture; per-pixel noise at full resolution cost a
+   mobile GPU half its frame rate.
 
 ### Gotchas
 
@@ -135,6 +138,12 @@ declared there too.
   `ANativeWindow_setFrameRate`; the adaptive resolution still only aims for 60.
 - Android drops the window when the app goes to the background: `suspended`
   drops the render state and `resumed` rebuilds it.
+- On Android, panics and `show_error` go to logcat: `adb logcat -s camel-eon`.
+  The library is linked for 16 KB pages (`android/build.sh` sets RUSTFLAGS;
+  cargo-apk ignores rustflags in `.cargo/config.toml`), or it won't load on
+  newer devices.
+- The dusk city honours the detail levels (see `dusk.rs`), so the adaptive
+  quality can lighten it when the CPU is the limit.
 - Dusk city shadows are geometry: `dusk::shadow_path` slides a caster's
   points along the sunlight onto a roof's plane and fills their hull, clipped
   to the roof and drawn just above it (`block_depth - 0.004`). Konrad's is cast
