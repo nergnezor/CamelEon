@@ -1,0 +1,57 @@
+# The Android app: the game's sources built as a native library for a
+# NativeActivity, packaged with cargo-apk (see android/build.sh). A separate
+# package, outside any workspace, so the desktop crate and `dx serve` don't
+# see it; build.sh copies the main Cargo.lock here so versions match.
+[workspace]
+
+[package]
+name = "camel-eon-android"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "camel_eon"
+path = "../src/android.rs"
+crate-type = ["cdylib"]
+
+[features]
+# Never enabled here; declared so the shared code's `cfg(feature = "hotpatch")`
+# is a known feature.
+hotpatch = []
+
+[dependencies]
+cpal = "0.18.2"
+gilrs = "0.11.2"
+glam = "0.33.10"
+libc = "0.2"
+vello = "0.10.0"
+web-time = "1.1.0"
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+pollster = "1.0.1"
+
+[package.metadata.android]
+package = "io.github.nergnezor.cameleon"
+apk_name = "camel-eon"
+build_targets = ["aarch64-linux-android"]
+# Debug-signed; fine for sideloading.
+strip = "strip"
+
+[package.metadata.android.sdk]
+min_sdk_version = 28
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "Camel Eon"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+orientation = "sensorLandscape"
+# Keep the game running (and the GPU state alive) through rotations and
+# keyboard or screen-size changes.
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.version"
+required = true
+# Vulkan 1.1 (0x401000).
+version = 4198400

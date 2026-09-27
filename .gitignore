@@ -1,2 +1,4 @@
 /target
 /dist
+/android/target
+/android/Cargo.lock

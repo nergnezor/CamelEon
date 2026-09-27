@@ -4,10 +4,12 @@ Guidance for coding agents working on **Camel Eon**, a 2.5D jungle platformer
 in Rust. The hero, Konrad (Flashback-inspired, purple velour tracksuit, big
 blue shader-rendered hair), runs, jumps, climbs and swings through the jungle.
 Graphics are GPU vector graphics (Vello on wgpu), not sprites. It runs in a
-window on desktop, on the web (WebGPU), and in the kitty terminal.
+window on desktop, on the web (WebGPU), on Android (native, Vulkan) and in
+the kitty terminal.
 
 Live web build: https://nergnezor.github.io/CamelEon/ (deployed by
-`.github/workflows/pages.yml` on every push to `main`).
+`.github/workflows/pages.yml` on every push to `main`, together with the Android
+APK at https://nergnezor.github.io/CamelEon/camel-eon.apk).
 
 ## Conventions
 
@@ -32,10 +34,12 @@ in `nix-shell --run '…'`.
 | Terminal mode | `cargo run --release -- --terminal` (kitty) or `--direct` (over SSH) |
 | Web build | `web/build.sh` → `dist/` (needs `wasm-bindgen-cli` matching `Cargo.lock`) |
 | Check the wasm target | `cargo build --release --target wasm32-unknown-unknown` |
+| Android APK | `android/build.sh` → `dist/camel-eon.apk` (needs the SDK, NDK, `cargo-apk` and the `aarch64-linux-android` target) |
 | Screenshot / test | `cargo run --release -- --snapshot out.ppm 'SCRIPT'` |
 
 Before committing, make sure both the native build and the wasm target compile
-without warnings.
+without warnings (and the Android build, when touching `window.rs` or adding
+modules).
 
 ### Hot reload limits
 
@@ -69,7 +73,10 @@ running.
 
 ## Architecture
 
-`src/main.rs` picks the mode; everything else is shared.
+`src/main.rs` picks the mode; everything else is shared. `src/android.rs` is
+the crate root of the Android library (`android/Cargo.toml`, a separate
+package so the desktop crate and `dx serve` don't see it): new modules must be
+declared there too.
 
 | File | Role |
 |---|---|
@@ -117,5 +124,10 @@ running.
   the synth. The game only queues `Game::sounds` and reports `ambience()`;
   the frontend passes them on with `Audio::feed`. On the web the audio
   device opens on the first key press or touch (browser autoplay rules).
+- The game follows the display's refresh rate (`Game::update` takes any `dt`),
+  so 90/120 Hz screens get 90/120 FPS. On Android the app asks for 120 Hz with
+  `ANativeWindow_setFrameRate`; the adaptive resolution still only aims for 60.
+- Android drops the window when the app goes to the background: `suspended`
+  drops the render state and `resumed` rebuilds it.
 - Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
   single-threaded, and there's no hot reload.

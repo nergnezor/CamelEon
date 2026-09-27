@@ -93,6 +93,16 @@ impl Audio {
         shared.ambience = ambience;
     }
 
+    /// Stops and restarts the sound device (while the app is in the
+    /// background).
+    pub fn set_paused(&self, paused: bool) {
+        let Some(stream) = &self.stream else { return };
+        let result = if paused { stream.pause() } else { stream.play() };
+        if let Err(err) = result {
+            eprintln!("camel-eon: sound: {err}");
+        }
+    }
+
     pub fn toggle_mute(&self) {
         if let Ok(mut shared) = self.shared.lock() {
             shared.muted = !shared.muted;

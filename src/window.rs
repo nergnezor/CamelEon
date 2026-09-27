@@ -201,16 +201,29 @@ impl ApplicationHandler<UserEvent> for App {
         pollster::block_on(setup);
     }
 
+    /// Android takes the window away when the app goes to the background:
+    /// drop everything tied to it (it's rebuilt in `resumed`) and go quiet.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.state.take().is_some() {
+            self.audio.set_paused(true);
+        }
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Ready(ready) => {
                 let (context, state) = *ready;
+                #[cfg(target_os = "android")]
+                request_high_refresh_rate(&state.window);
                 let size = state.window.inner_size();
                 self.touch.resize(size.width as f64, size.height as f64);
                 self.resolution = Resolution::initial(size.width as f64 * size.height as f64);
                 state.window.request_redraw();
                 self.context = Some(context);
                 self.state = Some(state);
+                self.audio.set_paused(false);
+                // Don't simulate the time spent in the background.
+                self.last_frame = Instant::now();
             }
             UserEvent::Failed(err) => {
                 show_error(&err);
@@ -375,10 +388,45 @@ pub(crate) fn show_error(err: &str) {
     }
 }
 
+/// Asks Android for 120 Hz. Many phones run apps at 60 Hz unless the app
+/// votes for more; the game itself runs at whatever rate vsync gives it.
+/// `ANativeWindow_setFrameRate` needs Android 11, so it's looked up at run
+/// time and older versions keep their default.
+#[cfg(target_os = "android")]
+fn request_high_refresh_rate(window: &Window) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    type SetFrameRate = unsafe extern "C" fn(*mut std::ffi::c_void, f32, i8) -> i32;
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::AndroidNdk(handle) = handle.as_raw() else { return };
+    // SAFETY: dlsym with a NUL-terminated name; the symbol, when present,
+    // has the signature above (from <android/native_window.h>), and the
+    // window pointer is alive while winit's window is.
+    unsafe {
+        let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"ANativeWindow_setFrameRate".as_ptr());
+        if symbol.is_null() {
+            return;
+        }
+        let set_frame_rate: SetFrameRate = std::mem::transmute(symbol);
+        // ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT
+        set_frame_rate(handle.a_native_window.as_ptr(), 120.0, 0);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn run() {
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .expect("failed to create event loop");
+    run_with(EventLoop::<UserEvent>::with_user_event());
+}
+
+#[cfg(target_os = "android")]
+pub fn run_android(app: winit::platform::android::activity::AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    builder.with_android_app(app);
+    run_with(builder);
+}
+
+fn run_with(mut builder: winit::event_loop::EventLoopBuilder<UserEvent>) {
+    let event_loop = builder.build().expect("failed to create event loop");
     let app = App {
         context: Some(RenderContext::new()),
         state: None,

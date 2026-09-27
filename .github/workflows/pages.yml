@@ -1,4 +1,5 @@
-# Builds the web version (WebAssembly + WebGPU) and publishes it to GitHub Pages.
+# Builds the web version (WebAssembly + WebGPU) and the Android app, and
+# publishes both to GitHub Pages (the APK at camel-eon.apk).
 name: Web build
 
 on:
@@ -16,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,12 +30,55 @@ jobs:
           version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')
           cargo install wasm-bindgen-cli --version "$version" --locked
       - run: web/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android
+      - run: cargo install cargo-apk --locked
+      # A fixed signing key lets new builds install over old ones. Without the
+      # secret each build gets a fresh key, and updating needs an uninstall.
+      - name: Signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          fi
+      # The runner has the Android SDK and several NDKs; use the latest.
+      - run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" android/build.sh
+        env:
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: dist/camel-eon.apk
+
+  pages:
+    needs: [web, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    needs: build
+    needs: pages
     runs-on: ubuntu-latest
     environment:
       name: github-pages
