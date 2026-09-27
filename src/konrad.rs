@@ -162,22 +162,48 @@ fn rz(a: f64) -> DQuat {
 // Animation clips. Limbs hang along −y: a negative rotation about x swings
 // them forward, a positive rotation about z swings them out to +x.
 
-/// Standing: slow breathing, a weight shift, a glance around.
+/// Breathing: 0..1..0, one breath about every four seconds.
+fn breath(time: f64) -> f64 {
+    0.5 - 0.5 * (time * 1.5).cos()
+}
+
+/// Standing: the whole body is alive, not just the arms. He breathes (chest
+/// rises and fills out), sways slowly from the ankles, rests on one leg with
+/// the other knee relaxed and changes legs now and then, glances up and
+/// down, and his arms hang loosely and follow the body a beat late.
 fn idle(m: &Motion) -> Pose {
     let mut p = Pose::rest(COUNT);
-    let breath = (m.time * 1.6).sin();
-    let shift = (m.time * 0.45).sin();
-    p.rotate(PELVIS, rz(0.03 * shift));
-    p.rotate(SPINE, rx(0.02 * breath) * rz(-0.03 * shift));
-    p.rotate(CHEST, rx(0.015 * breath));
-    p.rotate(HEAD, ry(0.35 * (m.time * 0.3).sin().powi(3)) * rx(0.05));
+    let t = m.time;
+    let b = breath(t);
+    let sway = (t * 0.5).sin();
+    let lagged_sway = (t * 0.5 - 0.6).sin();
+    // Weight on the left leg when > 0, eased so it settles on each side.
+    let weight = {
+        let w = (t * 0.45).sin();
+        w.signum() * w.abs().powf(0.4)
+    };
+    // Every so often he glances down at the ground for a moment.
+    let glance = {
+        let c = (t * 0.13) % 1.0;
+        if c < 0.12 { (c / 0.12 * PI).sin() } else { 0.0 }
+    };
+
+    // Lean from the ankles: the pelvis tips, the hips counter so the feet stay.
+    p.rotate(PELVIS, rx(0.05 * sway) * rz(0.03 * weight));
+    p.rotate(SPINE, rx(-0.03 * b - 0.02 * sway));
+    p.rotate(CHEST, rx(-0.05 * b));
+    p.rotate(NECK, rx(0.04 * b + 0.1 * glance));
+    p.rotate(HEAD, rx(0.08 * (t * 0.31).sin() + 0.35 * glance));
     for (hip, knee, side) in [(HIP_L, KNEE_L, -1.0), (HIP_R, KNEE_R, 1.0)] {
-        p.rotate(hip, rz(side * 0.05) * rx(-0.04));
-        p.rotate(knee, rx(0.06 + 0.04 * (shift * side).max(0.0)));
+        // The leg without the weight relaxes: knee forward, hip a bit bent.
+        let relaxed = ((-weight * side) as f64).max(0.0);
+        p.rotate(hip, rx(-0.05 * sway - 0.22 * relaxed) * rz(side * 0.04));
+        p.rotate(knee, rx(0.05 + 0.45 * relaxed));
     }
     for (shoulder, elbow, side) in [(SHOULDER_L, ELBOW_L, -1.0), (SHOULDER_R, ELBOW_R, 1.0)] {
-        p.rotate(shoulder, rz(side * 0.1) * rx(0.05 * breath));
-        p.rotate(elbow, rx(-0.25));
+        // Arms hang loose; they trail the sway and open a touch on each breath.
+        p.rotate(shoulder, rz(side * (0.09 + 0.03 * b)) * rx(0.06 * lagged_sway + 0.04));
+        p.rotate(elbow, rx(-0.22 - 0.06 * b));
     }
     p
 }
@@ -508,7 +534,7 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look) -> Anchors {
         ],
         // Seen from the side: chest deeper than the waist, narrowing to the
         // shoulders so the top ends below the chin.
-        &[0.22, 0.2, 0.25, 0.2].map(|w| w * px),
+        &[0.22, 0.2, 0.25 * (1.0 + 0.05 * breath(look.time)), 0.2].map(|w| w * px),
     );
     shapes.push((torso, SHIRT));
     // Jeans round the hips, with the belt.
