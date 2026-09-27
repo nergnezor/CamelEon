@@ -6,7 +6,8 @@
 //! A step `@N` starts from checkpoint N instead. Environment variables:
 //! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
 //! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
-//! `CAMEL_EON_WAV=out.wav` (also records the sound of the whole script).
+//! `CAMEL_EON_WAV=out.wav` (also records the sound of the whole script),
+//! `CAMEL_EON_LEVEL=N` (0 = the dusk city, 1 = the jungle).
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::util::RenderContext;
@@ -27,7 +28,9 @@ pub fn run(out: &str, script: &str) {
 }
 
 fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut game = Game::new();
+    // Level: `CAMEL_EON_LEVEL=1` for the jungle.
+    let level = std::env::var("CAMEL_EON_LEVEL").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut game = Game::with_level(level);
     // Detail level to test the low-detail modes: `CAMEL_EON_DETAIL=2`.
     if let Some(level) = std::env::var("CAMEL_EON_DETAIL").ok().and_then(|v| v.parse().ok()) {
         crate::paint::set_detail(level);
@@ -107,7 +110,7 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
     // Render a fresh game first, like the window's earlier frames, so stale
     // GPU caches (e.g. the hair image in Vello's atlas) show up here too.
-    let fresh = Game::new();
+    let fresh = Game::with_level(level);
     renderer.render(device, queue, width, height, |layers, hair| fresh.draw(layers, width as f64, height as f64, hair))?;
     renderer.render(device, queue, width, height, |layers, hair| game.draw(layers, width as f64, height as f64, hair))?;
     let rgba = renderer.read_pixels(device, queue)?;

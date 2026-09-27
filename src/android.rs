@@ -8,6 +8,7 @@
 
 mod audio;
 mod canvas3d;
+mod dusk;
 mod frame;
 mod game;
 mod gamepad;
@@ -15,6 +16,7 @@ mod hair;
 mod jungle;
 mod konrad;
 mod level;
+mod noise;
 mod paint;
 mod player;
 mod rig;

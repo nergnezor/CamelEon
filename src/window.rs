@@ -255,6 +255,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.game.weather.cycle_mode();
                     }
                     PhysicalKey::Code(KeyCode::KeyM) if pressed && !event.repeat => self.audio.toggle_mute(),
+                    PhysicalKey::Code(KeyCode::KeyN) if pressed && !event.repeat => self.game.next_level(),
                     PhysicalKey::Code(KeyCode::KeyF) if pressed && !event.repeat => {
                         self.stats.visible = !self.stats.visible;
                     }

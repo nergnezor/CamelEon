@@ -1,12 +1,14 @@
 mod audio;
 mod konrad;
 mod canvas3d;
+mod dusk;
 mod frame;
 mod game;
 mod gamepad;
 mod hair;
 mod jungle;
 mod level;
+mod noise;
 mod paint;
 mod player;
 mod rig;
@@ -33,7 +35,7 @@ Usage: camel-eon [MODE]
 
 Window mode: V and F toggle vsync and the FPS overlay, H cycles the hair
 (shader, both, vector), C cycles the weather (showers, clear, rain),
-M mutes the sound.
+M mutes the sound, N skips to the next level.
 
 Controls:
   ← → / A D     run

@@ -131,13 +131,12 @@ pub fn draw_fog(scene: &mut Scene, cam: &Camera, w: f64, time: f64, rain: f64, w
 
 /// Mist pooling in the pits, below ground level (front layer, drawn before
 /// the platforms so it only shows where there's no ground).
-pub fn draw_pit_mist(scene: &mut Scene, cam: &Camera, w: f64, h: f64, rain: f64) {
+pub fn draw_pit_mist(scene: &mut Scene, cam: &Camera, w: f64, h: f64, rain: f64, tint: Color) {
     let top = cam.point(DVec3::new(0.0, -0.3, 0.5)).y;
     let bottom = cam.point(DVec3::new(0.0, -7.0, 0.5)).y;
     if top > h {
         return;
     }
-    let tint = Color::from_rgb8(0x6e, 0x86, 0x94);
     let mist = Gradient::new_linear((0.0, top), (0.0, bottom)).with_stops([
         (0.0, tint.with_alpha(0.0)),
         (0.35, tint.with_alpha((0.35 + 0.2 * rain) as f32)),

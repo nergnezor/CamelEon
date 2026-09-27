@@ -9,7 +9,8 @@ use crate::audio::{Ambience, Sfx};
 use crate::konrad::{self as hero, Animator, Look, Motion};
 use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
-use crate::level::{self, Level};
+use crate::dusk;
+use crate::level::{self, Level, Theme};
 use crate::player::{Controls, Player};
 use crate::frame::{FrameInfo, Layers, Post};
 use crate::hair::{HairFrame, HairStyle};
@@ -89,6 +90,8 @@ pub struct Game {
     /// Gamepad state, set by the frontend.
     pub pad: Input,
     prev_jump: bool,
+    /// Which of `level::all()` is being played.
+    level_index: usize,
     level: Level,
     player: Player,
     fly_homes: Vec<DVec2>,
@@ -132,13 +135,21 @@ pub struct Game {
 
 impl Game {
     pub fn new() -> Self {
-        let level = level::jungle();
+        Self::with_level(0)
+    }
+
+    /// A fresh game on level `index` of `level::all()` (wrapping round).
+    pub fn with_level(index: usize) -> Self {
+        let levels = level::all();
+        let level_index = index % levels.len();
+        let level = levels[level_index]();
         let start = level.checkpoints[0];
         let fly_homes = level.flies.clone();
         Self {
             input: Input::default(),
             pad: Input::default(),
             prev_jump: false,
+            level_index,
             player: Player::new(start),
             flies: fly_homes.clone(),
             caught: vec![false; fly_homes.len()],
@@ -199,7 +210,7 @@ impl Game {
 
         if let Some(won) = self.won_at {
             if self.time - won > 6.0 {
-                *self = Game::new();
+                self.next_level();
                 return;
             }
             // Victory: ignore the player and jump for joy.
@@ -227,8 +238,12 @@ impl Game {
             if speed > 5.0 {
                 self.squash_vel -= speed * 0.25;
                 let feet = DVec3::new(self.player.pos.x, self.player.pos.y, 0.0);
-                self.burst(feet, Color::from_rgb8(0x9a, 0x7a, 0x50), (speed as usize / 3).min(10));
-                self.burst(feet, Color::from_rgb8(0x6a, 0x9a, 0x4a), (speed as usize / 4).min(6));
+                let (dust, bits) = match self.level.theme {
+                    Theme::Jungle => (Color::from_rgb8(0x9a, 0x7a, 0x50), Color::from_rgb8(0x6a, 0x9a, 0x4a)),
+                    Theme::Dusk => (Color::from_rgb8(0xae, 0x80, 0x78), Color::from_rgb8(0x5a, 0x44, 0x60)),
+                };
+                self.burst(feet, dust, (speed as usize / 3).min(10));
+                self.burst(feet, bits, (speed as usize / 4).min(6));
             }
         }
         if events.jumped {
@@ -277,6 +292,10 @@ impl Game {
         // One breath about every four seconds at rest, panting when winded.
         self.breath_phase += dt * (1.5 + 3.5 * self.exertion);
         self.weather.update(dt, self.time);
+        if self.level.theme == Theme::Dusk {
+            // A clear evening in the city.
+            self.weather.rain = 0.0;
+        }
         self.update_camo(dt);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
@@ -319,6 +338,13 @@ impl Game {
         }
     }
 
+    /// Starts the next level (after the last, the first again).
+    pub fn next_level(&mut self) {
+        let weather = self.weather.mode;
+        *self = Game::with_level(self.level_index + 1);
+        self.weather.mode = weather;
+    }
+
     /// Standing still, his tracksuit slowly blends into the surroundings;
     /// moving drops the camouflage at once.
     fn update_camo(&mut self, dt: f64) {
@@ -333,6 +359,9 @@ impl Game {
     /// What the camouflage blends into: bark in front of a tree trunk,
     /// otherwise the leaves.
     fn camo_colors(&self) -> (Color, Color) {
+        if self.level.theme == Theme::Dusk {
+            return dusk::CAMO;
+        }
         let p = self.player.pos;
         let trunk = self.level.trees.iter().any(|t| (p.x - t.x).abs() < 1.0 && p.y < t.y);
         if trunk { CAMO_BARK } else { CAMO_LEAVES }
@@ -487,40 +516,48 @@ impl Game {
         let (rain, wind) = (self.weather.rain, self.weather.wind);
         jungle::set_wind(wind);
         let skip = SKIP.load(std::sync::atomic::Ordering::Relaxed);
+        let dusk = self.level.theme == Theme::Dusk;
         if skip & SKIP_BACKGROUND == 0 {
             crate::paint::set_view(w / 2.0, h / 2.0, h / view_height / 170.0);
-            jungle::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
-            weather::draw_birds(&mut layers.far, &half, w / 2.0, h / 2.0, self.time, rain);
-            weather::draw_fog(&mut layers.mid, &half, w / 2.0, self.time, rain, wind);
-            let mut mid = Canvas3d::new(half);
-            weather::draw_leaves(&mut mid, w / 2.0, self.time, wind, (6.0, 14.0), 70);
-            mid.finish(&mut layers.mid);
+            if dusk {
+                dusk::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
+            } else {
+                jungle::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
+                weather::draw_birds(&mut layers.far, &half, w / 2.0, h / 2.0, self.time, rain);
+                weather::draw_fog(&mut layers.mid, &half, w / 2.0, self.time, rain, wind);
+                let mut mid = Canvas3d::new(half);
+                weather::draw_leaves(&mut mid, w / 2.0, self.time, wind, (6.0, 14.0), 70);
+                mid.finish(&mut layers.mid);
+            }
         }
         crate::paint::set_view(w, h, h / view_height / 85.0);
 
         let scene = &mut layers.front;
         if skip & SKIP_WORLD == 0 {
-            weather::draw_pit_mist(scene, &camera, w, h, rain);
+            // Mist in the jungle's pits; dusky haze deep between the buildings.
+            let tint = if dusk { Color::from_rgb8(0x8e, 0x4a, 0x70) } else { Color::from_rgb8(0x6e, 0x86, 0x94) };
+            weather::draw_pit_mist(scene, &camera, w, h, rain, tint);
         }
         let mut canvas = Canvas3d::new(camera);
         if skip & SKIP_WORLD == 0 {
-            jungle::draw_world(
-                &mut canvas,
-                &self.level,
-                &WorldView {
-                    time: self.time,
-                    flies: &self.flies,
-                    caught: &self.caught,
-                    checkpoint: self.checkpoint,
-                    screen_width: w,
-                    player: self.player.pos,
-                    grounded: self.player.on_ground,
-                    rain,
-                },
-            );
-            weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
-            weather::draw_fireflies(&mut canvas, w, self.time, rain);
-            weather::draw_rain(&mut canvas, &self.level, w, h, self.time, rain, wind);
+            let view = WorldView {
+                time: self.time,
+                flies: &self.flies,
+                caught: &self.caught,
+                checkpoint: self.checkpoint,
+                screen_width: w,
+                player: self.player.pos,
+                grounded: self.player.on_ground,
+                rain,
+            };
+            if dusk {
+                dusk::draw_world(&mut canvas, &self.level, &view);
+            } else {
+                jungle::draw_world(&mut canvas, &self.level, &view);
+                weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
+                weather::draw_fireflies(&mut canvas, w, self.time, rain);
+                weather::draw_rain(&mut canvas, &self.level, w, h, self.time, rain, wind);
+            }
         }
         let mut hair = None;
         if skip & SKIP_JOE == 0 {
@@ -562,10 +599,13 @@ impl Game {
         FrameInfo {
             hair,
             post: Post {
-                sun: [crate::paint::SUN.0 as f32, crate::paint::SUN.1 as f32],
+                sun: if dusk { [dusk::SUN.0 as f32, dusk::SUN.1 as f32] } else { [crate::paint::SUN.0 as f32, crate::paint::SUN.1 as f32] },
                 rain: rain as f32,
-                rays: 1.0,
+                rays: if dusk { 0.5 } else { 1.0 },
                 grade: skip & SKIP_GRADE == 0,
+                theme: self.level.theme,
+                time: self.time as f32,
+                pan: camera.eye.x as f32,
             },
         }
     }
@@ -628,7 +668,8 @@ impl Game {
             let cast_shape = Affine::translate(cast.center().to_vec2())
                 * Affine::rotate(cast.rotation())
                 * Affine::scale_non_uniform(cast.radii().x, cast.radii().y);
-            let cast_alpha = (0.35 * fade * light * light) as f32;
+            // (In the dusk city the long shadow is cast from his skeleton.)
+            let cast_alpha = if self.level.theme == Theme::Dusk { 0.0 } else { (0.35 * fade * light * light) as f32 };
             let cast_fill = Gradient::new_radial((0.0, 0.0), 1.0).with_stops([
                 (0.0, Color::from_rgb8(0x14, 0x12, 0x2a).with_alpha(cast_alpha)),
                 (1.0, Color::from_rgb8(0x14, 0x12, 0x2a).with_alpha(0.0)),
@@ -645,6 +686,10 @@ impl Game {
         let root = hero::root(feet, rot, self.squash, stretch);
         let standing = p.on_ground;
         let solved = hero::plant(&self.skeleton, &pose, root, standing);
+        let dusk = self.level.theme == Theme::Dusk;
+        if dusk {
+            dusk::draw_body_shadow(canvas, &self.level, &solved);
+        }
         let look = Look {
             time: self.time,
             vel: DVec3::new(p.vel.x, p.vel.y, 0.0),
@@ -656,6 +701,9 @@ impl Game {
             breath: self.breath(),
             camo: self.camo,
             camo_colors: self.camo_colors(),
+            // The dusk sun is low on the right, and rims him in orange.
+            sun_dir: if dusk { dusk::SUN_SCREEN_DIR } else { Vec2::new(0.55, -0.83) },
+            rim: if dusk { Color::from_rgb8(0xff, 0xa4, 0x68) } else { hero::RIM },
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).

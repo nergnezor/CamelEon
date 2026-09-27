@@ -10,12 +10,17 @@
 //! 2. Composite: the background layers blurred for depth of field (the far
 //!    one more), the sharp foreground over them, the light added, and the
 //!    grade (sunlight fading to dusk, vignette, sun glow, rain).
+//!
+//! In the dusk city the sky itself is a shader too: a sunset gradient, the
+//! low sun and drifting noise clouds lit from below, drawn wherever the far
+//! layer leaves a gap.
 
 use vello::peniko::{Color, ImageData};
 use vello::wgpu;
 use vello::{AaConfig, Renderer, RendererOptions, Scene};
 
 use crate::hair::{HairFrame, HairMode, HairRenderer, HairStyle};
+use crate::level::Theme;
 
 /// What the game draws into, each frame.
 #[derive(Default)]
@@ -47,11 +52,18 @@ pub struct Post {
     pub rays: f32,
     /// Whether to apply the grade (off for the GPU benchmark).
     pub grade: bool,
+    /// Which world's sky and grade: the jungle's, or the dusk city's.
+    pub theme: Theme,
+    /// Seconds of game time, for drifting clouds.
+    pub time: f32,
+    /// How far the camera has panned (world units), so the clouds move
+    /// with a little parallax.
+    pub pan: f32,
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Self { sun: [0.72, 0.18], rain: 0.0, rays: 1.0, grade: true }
+        Self { sun: [0.72, 0.18], rain: 0.0, rays: 1.0, grade: true, theme: Theme::Jungle, time: 0.0, pan: 0.0 }
     }
 }
 
@@ -71,6 +83,11 @@ struct Uniforms {
     rain: f32,
     rays: f32,
     grade: f32,
+    // 0 = jungle, 1 = dusk city.
+    theme: f32,
+    time: f32,
+    pan: f32,
+    spare: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var smp: sampler;
@@ -96,6 +113,115 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VertexOut {
 fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.3, 0.59, 0.11));
 }
+
+// ---- Dusk sky ----
+// The camera looks straight ahead, so the horizon is the middle of the screen.
+const HORIZON: f32 = 0.5;
+
+fn hash21(p: vec2<f32>) -> f32 {
+    var q = fract(p * vec2<f32>(123.34, 456.21));
+    q += dot(q, q + 45.32);
+    return fract(q.x * q.y);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let s = f * f * (3.0 - 2.0 * f);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+fn fbm(p: vec2<f32>) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var q = p;
+    for (var i = 0; i < 5; i++) {
+        sum += value_noise(q) * amp;
+        // Rotate each octave so the lattice doesn't show.
+        q = mat2x2<f32>(1.6, 1.2, -1.2, 1.6) * q + vec2<f32>(3.1, 1.7);
+        amp *= 0.5;
+    }
+    return sum;
+}
+
+// Distance to the sun in screen heights.
+fn sun_distance(uv: vec2<f32>) -> f32 {
+    return length((uv - u.sun) * vec2<f32>(u.aspect, 1.0));
+}
+
+// The clear sky: a sunset gradient by height above the horizon, warmer and
+// brighter towards the sun, and the sun's disc.
+fn dusk_gradient(uv: vec2<f32>) -> vec3<f32> {
+    let e = HORIZON - uv.y;
+    let gold = vec3<f32>(1.0, 0.76, 0.47);
+    let coral = vec3<f32>(1.0, 0.55, 0.43);
+    let pink = vec3<f32>(0.9, 0.4, 0.53);
+    let violet = vec3<f32>(0.55, 0.27, 0.52);
+    let night = vec3<f32>(0.2, 0.13, 0.33);
+    var col = mix(gold, coral, smoothstep(0.0, 0.07, e));
+    col = mix(col, pink, smoothstep(0.05, 0.2, e));
+    col = mix(col, violet, smoothstep(0.17, 0.36, e));
+    col = mix(col, night, smoothstep(0.3, 0.55, e));
+    // Below the horizon: haze over the city.
+    col = mix(col, vec3<f32>(0.93, 0.56, 0.5), smoothstep(0.0, -0.08, e));
+    let d = sun_distance(uv);
+    // The glow round the sun, and the horizon brightening towards it.
+    col += vec3<f32>(1.0, 0.62, 0.35) * (0.55 * exp(-d * d * 18.0) + 0.25 * exp(-d * 3.5));
+    col += vec3<f32>(1.0, 0.7, 0.45) * 0.3 * exp(-abs(e) * 30.0) * exp(-abs(uv.x - u.sun.x) * u.aspect * 1.6);
+    return col;
+}
+
+fn sun_disc(uv: vec2<f32>) -> f32 {
+    // Flattened a little by the thick air near the horizon.
+    let p = (uv - u.sun) * vec2<f32>(u.aspect, 1.12);
+    return smoothstep(0.036, 0.031, length(p));
+}
+
+// Cloud density at a screen point: noise on a plane high above, seen in
+// perspective, so clouds stretch out and crowd together near the horizon.
+fn cloud_density(uv: vec2<f32>) -> f32 {
+    let e = max(HORIZON - uv.y, 0.012);
+    let plane = vec2<f32>((uv.x - 0.5) * u.aspect / e, 1.0 / e);
+    let drift = vec2<f32>(u.pan * 0.05 + u.time * 0.06, 0.0);
+    let q = (plane + drift) * vec2<f32>(0.22, 0.9);
+    let n = fbm(q + vec2<f32>(0.0, 7.0));
+    // Long bands of stratus, thinning out high up and at the horizon.
+    let band = smoothstep(0.02, 0.09, e) * (1.0 - smoothstep(0.3, 0.46, e));
+    return smoothstep(0.5, 0.78, n) * band;
+}
+
+fn dusk_sky(uv: vec2<f32>) -> vec3<f32> {
+    var col = dusk_gradient(uv);
+    col = mix(col, vec3<f32>(1.0, 0.95, 0.82), sun_disc(uv));
+    let density = cloud_density(uv);
+    if density > 0.001 {
+        // Lit from below by the low sun: the cloud's underside glows where
+        // it thins out towards the sun, and everything near the sun burns.
+        let toward = normalize((u.sun - uv) * vec2<f32>(u.aspect, 1.0) + vec2<f32>(0.0, 0.25));
+        let ahead = cloud_density(uv + toward * vec2<f32>(1.0 / u.aspect, 1.0) * 0.012);
+        let edge = clamp((density - ahead) * 2.5 + 0.35, 0.0, 1.0);
+        let near = exp(-sun_distance(uv) * 2.2);
+        let shade = mix(vec3<f32>(0.42, 0.22, 0.42), vec3<f32>(0.78, 0.36, 0.48), smoothstep(0.1, 0.35, HORIZON - uv.y) * 0.6);
+        let lit = mix(vec3<f32>(1.0, 0.56, 0.4), vec3<f32>(1.0, 0.84, 0.56), near);
+        let cloud = mix(shade, lit, clamp(edge * (0.45 + 0.9 * near), 0.0, 1.0));
+        col = mix(col, cloud, density * 0.92);
+    }
+    return col;
+}
+
+// Sky brightness for the light shafts: the gradient and sun without clouds
+// (it's sampled many times per pixel).
+fn sky_light(uv: vec2<f32>) -> f32 {
+    if u.theme > 0.5 {
+        let d = sun_distance(uv);
+        return 0.4 * luma(dusk_gradient(uv)) + 1.2 * exp(-d * d * 60.0);
+    }
+    return 0.0;
+}
 "#;
 
 const LIGHT_WGSL: &str = r#"
@@ -104,7 +230,10 @@ const LIGHT_WGSL: &str = r#"
 fn shaft_source(uv: vec2<f32>) -> f32 {
     let mid = textureSampleLevel(mid_tex, smp, uv, 0.0).a;
     let front = textureSampleLevel(front_tex, smp, uv, 0.0).a;
-    let sky = luma(textureSampleLevel(far_tex, smp, uv, 0.0).rgb);
+    let far = textureSampleLevel(far_tex, smp, uv, 0.0);
+    // In the dusk city the far layer only holds the skyline: the sky is
+    // the shader's, behind it.
+    let sky = luma(far.rgb) * select(1.0, far.a, u.theme > 0.5) + sky_light(uv) * (1.0 - far.a);
     return (1.0 - max(mid, front)) * smoothstep(0.25, 0.75, sky);
 }
 
@@ -124,7 +253,13 @@ fn fs_light(in: VertexOut) -> @location(0) vec4<f32> {
     shafts *= u.rays * 0.032 * (1.0 - 0.7 * u.rain);
     // Only below the canopy edge do shafts read as shafts, not as sky glow.
     shafts *= smoothstep(0.0, 0.35, in.uv.y - u.sun.y + 0.1);
-    let warm = vec3<f32>(1.0, 0.86, 0.62);
+    // At dusk the rays hang in the air above the roofs; the buildings
+    // themselves stand in their own shade.
+    if u.theme > 0.5 {
+        shafts *= 1.0 - 0.85 * textureSampleLevel(front_tex, smp, in.uv, 0.0).a;
+    }
+    // A low evening sun throws long, strong, orange rays.
+    let warm = select(vec3<f32>(1.0, 0.86, 0.62), vec3<f32>(1.0, 0.6, 0.4) * 1.6, u.theme > 0.5);
 
     // Bloom from the foreground's brightest pixels.
     var bloom = vec3<f32>(0.0);
@@ -165,12 +300,27 @@ fn fs_composite(in: VertexOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let far = blurred(far_tex, uv, 2.6);
     let mid = blurred(mid_tex, uv, 1.1);
-    var col = far.rgb * (1.0 - mid.a) + mid.rgb;
+    var back = far.rgb;
+    if u.theme > 0.5 && far.a < 0.999 {
+        back += dusk_sky(uv) * (1.0 - far.a);
+    }
+    var col = back * (1.0 - mid.a) + mid.rgb;
     let front = textureSampleLevel(front_tex, smp, uv, 0.0);
     col = front.rgb * front.a + col * (1.0 - front.a);
     col += textureSampleLevel(light_tex, smp, uv, 0.0).rgb;
 
-    if u.grade > 0.5 {
+    if u.grade > 0.5 && u.theme > 0.5 {
+        // Evening: warm near the sun, rose and lilac away from it, a
+        // rose-tinted vignette and a burning glow round the low sun.
+        let s = sun_distance(uv);
+        let warmth = exp(-s * 1.4);
+        col *= mix(vec3<f32>(0.86, 0.74, 0.9), vec3<f32>(1.06, 0.96, 0.9), warmth);
+        let p = (uv - 0.5) * vec2<f32>(u.aspect, 1.0) / max(u.aspect, 1.0);
+        let v = smoothstep(0.4, 0.8, length(p));
+        col *= mix(vec3<f32>(1.0), vec3<f32>(0.62, 0.46, 0.62), v);
+        let glow = vec3<f32>(1.0, 0.6, 0.38) * (0.4 * exp(-s * s * 14.0) + 0.1 * exp(-s * 2.5));
+        col = 1.0 - (1.0 - col) * (1.0 - glow);
+    } else if u.grade > 0.5 {
         // Sunlight falling off into violet dusk away from the sun.
         let away = vec2<f32>(1.0 - u.sun.x - 0.3, 1.1);
         let d = away - u.sun;
@@ -277,7 +427,7 @@ impl FrameRenderer {
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post uniforms"),
-            size: 32,
+            size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -420,12 +570,14 @@ impl FrameRenderer {
         let t = self.targets.as_ref().expect("targets exist");
         let params = |w, h, base: Color| vello::RenderParams { base_color: base, width: w, height: h, antialiasing_method: AaConfig::Area };
         let clear = Color::TRANSPARENT;
-        self.renderer.render_to_texture(device, queue, &self.layers.far, &t.far, &params(half(width), half(height), Color::BLACK))?;
+        // The dusk sky is drawn by the composite shader behind the far layer.
+        let far_base = if info.post.theme == Theme::Dusk { clear } else { Color::BLACK };
+        self.renderer.render_to_texture(device, queue, &self.layers.far, &t.far, &params(half(width), half(height), far_base))?;
         self.renderer.render_to_texture(device, queue, &self.layers.mid, &t.mid, &params(half(width), half(height), clear))?;
         self.renderer.render_to_texture(device, queue, &self.layers.front, &t.front, &params(width, height, clear))?;
 
         let p = info.post;
-        let values: [f32; 8] = [
+        let values: [f32; 12] = [
             p.sun[0],
             p.sun[1],
             1.0 / half(width) as f32,
@@ -434,8 +586,12 @@ impl FrameRenderer {
             p.rain,
             p.rays,
             if p.grade { 1.0 } else { 0.0 },
+            if p.theme == Theme::Dusk { 1.0 } else { 0.0 },
+            p.time,
+            p.pan,
+            0.0,
         ];
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; 48];
         for (i, v) in values.iter().enumerate() {
             bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }

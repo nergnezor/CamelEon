@@ -2,7 +2,8 @@
 
 Guidance for coding agents working on **Camel Eon**, a 2.5D jungle platformer
 in Rust. The hero, Konrad (Flashback-inspired, purple velour tracksuit, big
-blue shader-rendered hair), runs and jumps through the jungle.
+blue shader-rendered hair), runs and jumps over the rooftops of a future
+city at dusk (the first level) and through the jungle (the second).
 Graphics are GPU vector graphics (Vello on wgpu), not sprites. It runs in a
 window on desktop, on the web (WebGPU), on Android (native, Vulkan) and in
 the kitty terminal.
@@ -62,7 +63,8 @@ saves the last frame (convert with e.g. `magick out.ppm out.png`).
 - Environment: `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`,
   `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
   `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped),
-  `CAMEL_EON_WAV=out.wav` (renders the script's sound and prints its peak/RMS).
+  `CAMEL_EON_WAV=out.wav` (renders the script's sound and prints its peak/RMS),
+  `CAMEL_EON_LEVEL=N` (0 = the dusk city, the default; 1 = the jungle).
 - It prints the scene build time and a status line per step (position,
   velocity, state), which is handy for checking movement numerically.
 - It renders a frame of a fresh game before the real one, so stale GPU caches
@@ -82,11 +84,13 @@ declared there too.
 |---|---|
 | `game.rs` | Game state and update loop: player, camera (look-ahead and zoom with speed), hair spring, breathing, effects; `draw` fills the layers |
 | `player.rs` | Movement: running with momentum boost, charged jump, coyote time, catching flies |
-| `level.rs` | Level layout: blocks, trees, flies, checkpoints |
+| `level.rs` | Levels (`level::all()`, in order) and their theme: blocks, trees or props, flies, checkpoints |
 | `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch), drawing in a fixed layer order, hair strands and beard |
 | `rig.rs` | Bones, poses (slerp blending) and forward kinematics |
 | `canvas3d.rs` | Perspective camera and painter's-sorted 3D drawing onto a Vello scene |
-| `jungle.rs` | Parallax background, platforms with grass, trees, near foreground, energy cells, global wind |
+| `jungle.rs` | The jungle: parallax background, platforms with grass, trees, near foreground, energy cells, global wind |
+| `dusk.rs` | The dusk city: mesas, skylines, airship, maglev, traffic, industry; buildings, containers, catwalks, props; long shadows projected along the sunlight |
+| `noise.rs` | Deterministic 1D/2D gradient noise, fbm and ridged noise for irregular shapes |
 | `weather.rs` | Rain, wind gusts, fog, pit mist, leaves, fireflies, birds |
 | `paint.rs` | Drawing helpers and detail levels |
 | `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |
@@ -107,7 +111,9 @@ declared there too.
 3. Vello renders each layer to its own texture.
 4. A quarter-resolution pass does light shafts and bloom; a composite pass
    does depth of field (blurring far/mid), the dusk grade, vignette, sun glow
-   and the rain grade.
+   and the rain grade. In the dusk city (`Post::theme`) the sky is drawn by
+   the composite shader too: a sunset gradient, the sun and fbm clouds, behind
+   a far layer that's rendered transparent.
 
 ### Gotchas
 
@@ -129,5 +135,11 @@ declared there too.
   `ANativeWindow_setFrameRate`; the adaptive resolution still only aims for 60.
 - Android drops the window when the app goes to the background: `suspended`
   drops the render state and `resumed` rebuilds it.
+- Dusk city shadows are geometry: `dusk::shadow_path` slides a caster's
+  points along the sunlight onto a roof's plane and fills their hull, clipped
+  to the roof and drawn just above it (`block_depth - 0.004`). Konrad's is cast
+  from his solved skeleton. Keep the shadow sun (`dusk::sun_dir`) roughly
+  consistent with the sun on screen (`dusk::SUN`).
+- Keys: N skips to the next level (window and terminal).
 - Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
   single-threaded, and there's no hot reload.

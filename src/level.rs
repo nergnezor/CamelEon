@@ -1,6 +1,6 @@
-//! The jungle level: solid blocks, trees, flies, checkpoints
-//! and the goal. Gameplay happens in the z = 0 plane; blocks extend in depth
-//! only for looks.
+//! The levels: solid blocks, trees or props, flies, checkpoints and the
+//! goal. Gameplay happens in the z = 0 plane; blocks extend in depth only for
+//! looks.
 
 use glam::DVec2;
 
@@ -30,8 +30,40 @@ impl Block {
     }
 }
 
+/// Which world a level is set in; decides how everything is drawn.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Theme {
+    Jungle,
+    /// A future city at dusk: concrete, steel and a low sun.
+    Dusk,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PropKind {
+    /// A street lamp that flickers on as evening falls.
+    Lamp,
+    /// A mast with a turning radar dish.
+    Antenna,
+    /// A roof vent: a spinning fan under a grille, puffing steam.
+    Vent,
+    /// A flickering hologram sign on a post.
+    Sign,
+}
+
+/// Scenery standing on the platforms (only for looks, but it casts shadows).
+#[derive(Clone, Copy)]
+pub struct Prop {
+    pub kind: PropKind,
+    /// Where it stands: x, the height of the ground there, and depth.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 pub struct Level {
+    pub theme: Theme,
     pub blocks: Vec<Block>,
+    pub props: Vec<Prop>,
     /// Trees behind the play area, for looks: x and the height of the trunk.
     pub trees: Vec<DVec2>,
     /// Home positions of the flies.
@@ -59,6 +91,8 @@ fn log(x0: f64, x1: f64, top: f64) -> Block {
 pub fn jungle() -> Level {
     let p = DVec2::new;
     Level {
+        theme: Theme::Jungle,
+        props: Vec::new(),
         blocks: vec![
             // Invisible-ish walls at both ends.
             Block { x0: -16.0, x1: -8.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
@@ -142,4 +176,139 @@ pub fn jungle() -> Level {
         goal: p(320.0, 0.0),
         kill_y: -7.0,
     }
+}
+
+fn catwalk(x0: f64, x1: f64, top: f64) -> Block {
+    Block { x0, x1, y0: top - 0.35, y1: top, z0: -0.8, z1: 1.2, kind: BlockKind::Log }
+}
+
+/// A rooftop slab, ending in a sheer wall down into the dark.
+fn slab(x0: f64, x1: f64, top: f64) -> Block {
+    Block { x0, x1, y0: BOTTOM, y1: top, z0: -1.4, z1: 3.2, kind: BlockKind::Ground }
+}
+
+/// A cargo container or machine housing standing on a slab.
+fn crate_(x0: f64, x1: f64, y0: f64, y1: f64) -> Block {
+    Block { x0, x1, y0, y1, z0: -1.0, z1: 1.8, kind: BlockKind::Stone }
+}
+
+/// The future city at dusk: the same kind of run as the jungle (a warm-up,
+/// stairs up to a tower, a long sprint, a speed gap and a big leap), over
+/// rooftops at uneven heights.
+pub fn dusk() -> Level {
+    let p = DVec2::new;
+    let prop = |kind, x: f64, y: f64, z: f64| Prop { kind, x, y, z };
+    use PropKind::*;
+    Level {
+        theme: Theme::Dusk,
+        blocks: vec![
+            Block { x0: -16.0, x1: -8.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.2, kind: BlockKind::Stone },
+            // The start roof.
+            slab(-8.0, 22.0, 0.0),
+            crate_(8.0, 11.0, 0.0, 1.3),
+            catwalk(14.0, 17.5, 2.8),
+            // A small gap up onto a higher roof, catwalks above it.
+            slab(27.0, 45.0, 0.8),
+            catwalk(31.0, 35.0, 3.8),
+            catwalk(37.0, 41.5, 6.6),
+            // The wide gap, down onto a lower roof.
+            slab(55.0, 70.0, -0.8),
+            crate_(59.0, 61.0, -0.8, 0.4),
+            crate_(61.0, 63.0, -0.8, 1.6),
+            crate_(63.0, 65.0, -0.8, 2.8),
+            crate_(65.0, 68.5, -0.8, 4.0),
+            // A tower top, reached from the containers.
+            Block { x0: 70.0, x1: 80.0, y0: BOTTOM, y1: 6.0, z0: -1.4, z1: 3.2, kind: BlockKind::Stone },
+            catwalk(89.5, 92.5, 5.0),
+            // The long run.
+            slab(93.0, 160.0, 0.0),
+            catwalk(106.0, 110.0, 3.2),
+            catwalk(128.0, 133.0, 2.4),
+            catwalk(145.0, 150.0, 2.4),
+            // Speed gap.
+            slab(171.0, 226.0, 0.0),
+            crate_(190.0, 191.5, 0.0, 0.8),
+            crate_(208.0, 209.5, 0.0, 0.8),
+            // Launch ledge and the big leap.
+            slab(226.0, 240.0, 1.5),
+            slab(253.5, 330.0, 0.0),
+            // The teleporter's base.
+            Block { x0: 319.0, x1: 321.0, y0: 0.0, y1: 0.5, z0: -0.2, z1: 1.4, kind: BlockKind::Stone },
+            Block { x0: 330.0, x1: 338.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.2, kind: BlockKind::Stone },
+        ],
+        props: vec![
+            prop(Lamp, 3.0, 0.0, -0.9),
+            prop(Antenna, 19.0, 0.0, 2.3),
+            prop(Vent, 5.5, 0.0, 1.8),
+            prop(Sign, 29.5, 0.8, 1.9),
+            prop(Lamp, 43.0, 0.8, -0.9),
+            prop(Vent, 57.0, -0.8, 1.6),
+            prop(Antenna, 77.0, 6.0, 2.2),
+            prop(Lamp, 97.0, 0.0, -0.9),
+            prop(Vent, 102.0, 0.0, 2.0),
+            prop(Lamp, 117.0, 0.0, -0.9),
+            prop(Sign, 124.0, 0.0, 2.2),
+            prop(Lamp, 139.0, 0.0, -0.9),
+            prop(Antenna, 153.0, 0.0, 2.4),
+            prop(Lamp, 176.0, 0.0, -0.9),
+            prop(Vent, 183.0, 0.0, 1.9),
+            prop(Lamp, 198.0, 0.0, -0.9),
+            prop(Sign, 214.0, 0.0, 2.1),
+            prop(Lamp, 220.0, 0.0, -0.9),
+            prop(Vent, 232.0, 1.5, 1.8),
+            prop(Lamp, 260.0, 0.0, -0.9),
+            prop(Antenna, 271.0, 0.0, 2.4),
+            prop(Lamp, 280.0, 0.0, -0.9),
+            prop(Vent, 291.0, 0.0, 2.0),
+            prop(Lamp, 300.0, 0.0, -0.9),
+            prop(Sign, 309.0, 0.0, 2.2),
+        ],
+        trees: Vec::new(),
+        flies: vec![
+            p(4.0, 1.8),
+            p(9.5, 2.8),
+            p(15.7, 4.2),
+            p(24.5, 3.4),
+            p(33.0, 5.5),
+            p(39.0, 8.2),
+            p(43.5, 4.8),
+            p(50.5, 3.8),
+            p(62.0, 3.2),
+            p(64.0, 4.4),
+            p(75.0, 7.5),
+            p(86.2, 8.0),
+            p(91.0, 6.5),
+            p(101.5, 1.9),
+            p(108.0, 4.6),
+            p(118.0, 1.9),
+            p(136.0, 2.0),
+            p(152.0, 1.9),
+            p(166.0, 3.5),
+            p(184.0, 2.0),
+            p(199.0, 2.8),
+            p(215.0, 2.0),
+            p(233.0, 3.0),
+            p(247.5, 5.0),
+            p(265.0, 2.0),
+            p(282.0, 2.2),
+            p(300.0, 1.9),
+        ],
+        checkpoints: vec![
+            p(1.0, 0.0),
+            p(29.0, 0.8),
+            p(57.0, -0.8),
+            p(74.0, 6.0),
+            p(96.0, 0.0),
+            p(130.0, 0.0),
+            p(175.0, 0.0),
+            p(258.0, 0.0),
+        ],
+        goal: p(320.0, 0.5),
+        kill_y: -7.0,
+    }
+}
+
+/// The levels in order: playing through one leads to the next.
+pub fn all() -> [fn() -> Level; 2] {
+    [dusk, jungle]
 }

@@ -390,11 +390,7 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
     }
 
     let scale = cam.project(DVec3::new(b.x0, b.y1, b.z0)).scale;
-    let center = DVec3::new((b.x0 + b.x1) / 2.0, (y0.max(cam.eye.y - 8.0) + b.y1) / 2.0, (b.z0 + b.z1) / 2.0);
-    // Boxes further away in the xy plane are drawn first.
-    let dx = (b.x0 - cam.eye.x).max(cam.eye.x - b.x1).max(0.0);
-    let dy = (b.y0 - cam.eye.y).max(cam.eye.y - b.y1).max(0.0);
-    let depth = canvas.depth_of(center) + (dx + dy) * 0.001;
+    let depth = block_depth(&cam, b);
     // Ambient occlusion on the front: a shadow under the grass, then darker
     // with depth and towards the corners.
     let occlusion = |a: f32| OCCLUSION.with_alpha(a);
@@ -459,6 +455,26 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
             scene.stroke(&Stroke::new(0.04 * scale), Affine::IDENTITY, rim_color.with_alpha(0.5), None, rim);
         }
     });
+}
+
+/// Where a platform is sorted among the things drawn in front of the camera.
+pub fn block_depth(cam: &Camera, b: &Block) -> f64 {
+    // Boxes further away in the xy plane are drawn first.
+    let dx = (b.x0 - cam.eye.x).max(cam.eye.x - b.x1).max(0.0);
+    let dy = (b.y0 - cam.eye.y).max(cam.eye.y - b.y1).max(0.0);
+    (b.z0 + b.z1) / 2.0 - cam.eye.z + (dx + dy) * 0.001
+}
+
+/// The top face of a platform on screen.
+pub fn top_face(cam: &Camera, b: &Block) -> BezPath {
+    let p = |x: f64, z: f64| cam.point(DVec3::new(x, b.y1, z));
+    let mut path = BezPath::new();
+    path.move_to(p(b.x0, b.z0));
+    path.line_to(p(b.x1, b.z0));
+    path.line_to(p(b.x1, b.z1));
+    path.line_to(p(b.x0, b.z1));
+    path.close_path();
+    path
 }
 
 /// Puddles on top of a platform in the rain: they grow as it keeps

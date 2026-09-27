@@ -53,7 +53,7 @@ const ZIP: Color = Color::from_rgb8(0xc8, 0xcc, 0xd4);
 const SNEAKER: Color = Color::from_rgb8(0xee, 0xea, 0xe4);
 const SOLE: Color = Color::from_rgb8(0x9a, 0x9a, 0xa2);
 /// Warm sunlight on his edges, and the cool of the shade.
-const RIM: Color = Color::from_rgb8(0xff, 0xe2, 0xb0);
+pub const RIM: Color = Color::from_rgb8(0xff, 0xe2, 0xb0);
 const SHADE: Color = Color::from_rgb8(0x10, 0x14, 0x2e);
 const SKIN: Color = Color::from_rgb8(0xd4, 0x9c, 0x7a);
 /// Big blue hair: the dark mass underneath, the locks, and their shine.
@@ -308,6 +308,10 @@ pub struct Look {
     pub camo: f64,
     /// The camouflage's ground colour and the colour of its blotches.
     pub camo_colors: (Color, Color),
+    /// Which way the sun is on screen, and the colour of its light on his
+    /// edges.
+    pub sun_dir: Vec2,
+    pub rim: Color,
 }
 
 /// Colour for the limbs on the far side: a touch darker and cooler.
@@ -721,8 +725,8 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
     let eye = (!blink).then(|| Ellipse::new(at(0.062, 0.03), (0.01 * head_px, 0.007 * head_px), up.atan2() + std::f64::consts::FRAC_PI_2));
     let line_w = (0.008 * head_px).max(1.0);
     let sheen_w = 0.05 * px;
-    // The sun is up and to the right of the screen.
-    let sun_dir = Vec2::new(0.55, -0.83);
+    let sun_dir = look.sun_dir;
+    let rim_color = look.rim;
     let rim_w = 0.035 * px;
     let rim_alpha = (0.45 * (look.light - 0.35) / 0.65).clamp(0.0, 0.45) as f32;
     let shade_alpha = (0.55 * (1.0 - look.light)).clamp(0.0, 0.5) as f32;
@@ -741,7 +745,7 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
                 scene.push_clip_layer(Fill::NonZero, id, path);
                 // Shifted further than half the stroke width, so the far side
                 // falls outside the part entirely.
-                scene.stroke(&Stroke::new(rim_w), Affine::translate(-sun_dir * rim_w * 0.9), RIM.with_alpha(rim_alpha), None, path);
+                scene.stroke(&Stroke::new(rim_w), Affine::translate(-sun_dir * rim_w * 0.9), rim_color.with_alpha(rim_alpha), None, path);
                 scene.pop_layer();
             }
             if shade_alpha > 0.01 {
