@@ -20,7 +20,7 @@ impl Gamepads {
             Ok(g) => Some(g),
             Err(err) => {
                 // Not fatal: the keyboard still works.
-                eprintln!("cameljon: gamepads unavailable: {err}");
+                eprintln!("camel-eon: gamepads unavailable: {err}");
                 None
             }
         };

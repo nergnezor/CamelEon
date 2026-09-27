@@ -4,7 +4,7 @@
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
-//! `CAMELJON_SIZE=WxH`, `CAMELJON_DETAIL=0..2`, `CAMELJON_GPU_BENCH=1`.
+//! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`.
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::peniko::Color;
@@ -14,20 +14,20 @@ use vello::{AaConfig, Renderer, RendererOptions, Scene};
 use crate::game::Game;
 use crate::terminal::Target;
 
-/// Default image size; override with e.g. `CAMELJON_SIZE=1080x2400`.
+/// Default image size; override with e.g. `CAMEL_EON_SIZE=1080x2400`.
 const DEFAULT_SIZE: (u32, u32) = (1280, 720);
 
 pub fn run(out: &str, script: &str) {
     if let Err(err) = run_inner(out, script) {
-        eprintln!("cameljon: {err}");
+        eprintln!("camel-eon: {err}");
         std::process::exit(1);
     }
 }
 
 fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut game = Game::new();
-    // Detail level to test the low-detail modes: `CAMELJON_DETAIL=2`.
-    if let Some(level) = std::env::var("CAMELJON_DETAIL").ok().and_then(|v| v.parse().ok()) {
+    // Detail level to test the low-detail modes: `CAMEL_EON_DETAIL=2`.
+    if let Some(level) = std::env::var("CAMEL_EON_DETAIL").ok().and_then(|v| v.parse().ok()) {
         crate::paint::set_detail(level);
     }
     for step in script.split_whitespace() {
@@ -61,7 +61,7 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
             ..Default::default()
         },
     )?;
-    let (width, height) = std::env::var("CAMELJON_SIZE")
+    let (width, height) = std::env::var("CAMEL_EON_SIZE")
         .ok()
         .and_then(|v| {
             let (w, h) = v.split_once('x')?;
@@ -69,7 +69,7 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         })
         .unwrap_or(DEFAULT_SIZE);
     let target = Target::new(device, width, height);
-    if std::env::var("CAMELJON_GPU_BENCH").is_ok() {
+    if std::env::var("CAMEL_EON_GPU_BENCH").is_ok() {
         gpu_bench(&mut game, &mut renderer, device, queue, &target, width, height)?;
     }
     let mut scene = Scene::new();

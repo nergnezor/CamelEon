@@ -62,7 +62,7 @@ impl Transfer {
 
 pub fn run(transfer: Transfer) {
     if let Err(err) = run_inner(transfer) {
-        eprintln!("cameljon: {err}");
+        eprintln!("camel-eon: {err}");
         std::process::exit(1);
     }
 }
@@ -184,7 +184,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(fps) = stats.frame(work_start.elapsed().as_secs_f64()) {
             let max = stats.possible_fps();
-            execute!(out, terminal::SetTitle(format!("CamelJon — {fps:.0} FPS (max {max:.0})")))?;
+            execute!(out, terminal::SetTitle(format!("Camel Eon — {fps:.0} FPS (max {max:.0})")))?;
         }
 
         if let Some(rest) = FRAME_TIME.checked_sub(frame_start.elapsed()) {
@@ -314,7 +314,7 @@ fn send_shared_memory(
     placement: Placement,
     frame: u64,
 ) -> io::Result<PathBuf> {
-    let name = format!("cameljon-{}-{frame}", std::process::id());
+    let name = format!("camel-eon-{}-{frame}", std::process::id());
     let path = PathBuf::from(format!("/dev/shm/{name}"));
     std::fs::write(&path, pixels)?;
     write!(
@@ -394,7 +394,7 @@ impl Drop for TerminalGuard {
         );
         let _ = terminal::disable_raw_mode();
         // Remove any frame the terminal never read.
-        let prefix = format!("cameljon-{}-", std::process::id());
+        let prefix = format!("camel-eon-{}-", std::process::id());
         if let Ok(entries) = std::fs::read_dir("/dev/shm") {
             for entry in entries.flatten() {
                 if entry.file_name().to_string_lossy().starts_with(&prefix) {

@@ -179,7 +179,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let Some(context) = self.context.take() else { return };
         #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes().with_title("CamelJon");
+        let mut attributes = Window::default_attributes().with_title("Camel Eon");
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowAttributesExtWebSys;
@@ -346,7 +346,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(fps) = self.stats.frame(work) {
                     self.resolution.adapt(fps, self.stats.cpu_ms(), self.vsync);
                     state.window.set_title(&format!(
-                        "CamelJon — {fps:.0} FPS (max {:.0})",
+                        "Camel Eon — {fps:.0} FPS (max {:.0})",
                         self.stats.possible_fps()
                     ));
                 }
@@ -371,11 +371,11 @@ fn hot<R>(f: impl FnMut() -> R) -> R {
 }
 
 pub(crate) fn show_error(err: &str) {
-    eprintln!("cameljon: {err}");
+    eprintln!("camel-eon: {err}");
     #[cfg(target_arch = "wasm32")]
     if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
         let help = if err.starts_with("failed to create") {
-            "<p>Camel Joe needs WebGPU, which this browser doesn't have turned on.</p>\
+            "<p>Camel Eon needs WebGPU, which this browser doesn't have turned on.</p>\
              <p>It works out of the box in Chrome, Edge and Safari on Windows, macOS, Android and iOS.</p>\
              <p>On Linux, Chromium-based browsers (Chrome, Vivaldi, Brave, Edge) need two flags: \
              open <code>chrome://flags</code> (or <code>vivaldi://flags</code>), enable \

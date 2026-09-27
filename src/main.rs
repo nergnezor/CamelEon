@@ -17,7 +17,7 @@ mod window;
 
 #[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "\
-Usage: cameljon [MODE]
+Usage: camel-eon [MODE]
 
   (none)        Play in a window
   --terminal    Play inside the terminal (kitty graphics protocol)
