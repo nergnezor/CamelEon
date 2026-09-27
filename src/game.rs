@@ -12,12 +12,22 @@ use crate::level::{self, Level};
 use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
 use crate::rig::{Skeleton, Solved};
 
+/// Profiling switch: parts of the frame to leave out (`SKIP_*` bit flags).
+/// Only set by the snapshot tool's GPU benchmark.
+pub static SKIP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub const SKIP_BACKGROUND: u8 = 1;
+pub const SKIP_WORLD: u8 = 2;
+pub const SKIP_JOE: u8 = 4;
+pub const SKIP_GRADE: u8 = 8;
+
 /// Distance from the camera to the gameplay plane.
 const CAMERA_DISTANCE: f64 = 11.0;
 /// World units visible vertically in the gameplay plane: standing still, and
 /// at full running speed (the camera zooms out the faster Joe goes).
 const VIEW_HEIGHT: f64 = 8.5;
 const VIEW_HEIGHT_FAST: f64 = 13.0;
+/// World units always visible across the screen (matters in portrait).
+const MIN_VIEW_WIDTH: f64 = 10.0;
 const MAX_STEP: f64 = 1.0 / 120.0;
 const TONGUE: Color = Color::from_rgb8(0xe8, 0x5f, 0x8a);
 
@@ -347,15 +357,22 @@ impl Game {
     }
 
     pub fn draw(&self, scene: &mut Scene, w: f64, h: f64) {
+        // In portrait, zoom out so there's still room to see ahead.
+        let view_height = self.view_height.max(MIN_VIEW_WIDTH * h / w.max(1.0));
         let camera = Camera {
-            eye: DVec3::new(self.camera.x, self.camera.y, -CAMERA_DISTANCE),
-            focal: h / self.view_height * CAMERA_DISTANCE,
+            // The extra height in portrait goes mostly above Joe, not into the ground.
+            eye: DVec3::new(self.camera.x, self.camera.y + (view_height - self.view_height) * 0.3, -CAMERA_DISTANCE),
+            focal: h / view_height * CAMERA_DISTANCE,
             center: Point::new(w / 2.0, h / 2.0),
         };
-        crate::paint::set_view(w, h, h / self.view_height / 85.0);
-        jungle::draw_background(scene, &camera, w, h, self.time);
+        crate::paint::set_view(w, h, h / view_height / 85.0);
+        let skip = SKIP.load(std::sync::atomic::Ordering::Relaxed);
+        if skip & SKIP_BACKGROUND == 0 {
+            jungle::draw_background(scene, &camera, w, h, self.time);
+        }
 
         let mut canvas = Canvas3d::new(camera);
+        if skip & SKIP_WORLD == 0 {
         jungle::draw_world(
             &mut canvas,
             &self.level,
@@ -368,7 +385,10 @@ impl Game {
                 screen_width: w,
             },
         );
-        self.draw_joe(&mut canvas);
+        }
+        if skip & SKIP_JOE == 0 {
+            self.draw_joe(&mut canvas);
+        }
         for p in &self.particles {
             let pr = camera.project(p.pos);
             let r = p.size * pr.scale * p.life.min(1.0);
@@ -380,7 +400,9 @@ impl Game {
         canvas.finish(scene);
 
         self.draw_hud(scene, w, h);
-        crate::paint::grade(scene, w, h);
+        if skip & SKIP_GRADE == 0 {
+            crate::paint::grade(scene, w, h);
+        }
         if self.flash > 0.0 {
             scene.fill(
                 Fill::NonZero,
@@ -469,7 +491,8 @@ impl Game {
 
     fn draw_hud(&self, scene: &mut Scene, w: f64, h: f64) {
         // One fly icon per fly: filled when caught.
-        let r = (h * 0.014).max(4.0);
+        let n = self.caught.len() as f64;
+        let r = (h * 0.014).max(4.0).min(w / (n * 2.6 + 2.0));
         for (i, &caught) in self.caught.iter().enumerate() {
             let c = Point::new(r * 2.0 + i as f64 * r * 2.6, r * 2.0);
             let dot = Circle::new(c, r);

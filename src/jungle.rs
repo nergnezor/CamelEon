@@ -121,7 +121,8 @@ pub fn draw_background(scene: &mut Scene, cam: &Camera, w: f64, h: f64, time: f6
         let anchor = cam.point(DVec3::new(0.0, layer.base, layer.z));
         paint::wash_with_edge(scene, &hills, color, None, 160.0, li as u64 + 7, anchor, 0.1 + 0.08 * li as f32);
 
-        if layer.tree_spacing > 0.0 {
+        // At the lowest detail level only the nearest layer keeps its trees.
+        if layer.tree_spacing > 0.0 && (paint::detail() < 2 || li == LAYERS.len() - 1) {
             let first = (x0 / layer.tree_spacing).floor() as i64 - 1;
             let last = (x1 / layer.tree_spacing).ceil() as i64 + 1;
             for i in first..=last {

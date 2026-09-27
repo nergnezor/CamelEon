@@ -42,7 +42,10 @@ X/Square, B/Circle or right trigger for the tongue.";
 fn main() {
     #[cfg(target_arch = "wasm32")]
     {
-        console_error_panic_hook::set_once();
+        std::panic::set_hook(Box::new(|info| {
+            console_error_panic_hook::hook(info);
+            window::show_error(&format!("crash: {info}"));
+        }));
         window::run();
     }
     #[cfg(not(target_arch = "wasm32"))]

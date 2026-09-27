@@ -48,12 +48,17 @@ impl FrameStats {
         Some(self.fps)
     }
 
+    /// Average CPU time per frame over the last half second.
+    pub fn cpu_ms(&self) -> f64 {
+        self.work_ms
+    }
+
     /// The frame rate the work alone would allow.
     pub fn possible_fps(&self) -> f64 {
         if self.work_ms > 0.0 { 1000.0 / self.work_ms } else { 0.0 }
     }
 
-    pub fn draw(&self, scene: &mut Scene, w: f64, h: f64, vsync: bool) {
+    pub fn draw(&self, scene: &mut Scene, w: f64, h: f64, vsync: bool, resolution: f64) {
         if !self.visible || self.fps == 0.0 {
             return;
         }
@@ -66,6 +71,13 @@ impl FrameStats {
             self.work_ms,
             self.possible_fps()
         );
+        if resolution < 0.995 {
+            text.push_str(&format!("  res {:.0}%", resolution * 100.0));
+        }
+        let detail = crate::paint::detail();
+        if detail > 0 {
+            text.push_str(&format!("  detail -{detail}"));
+        }
         if !vsync {
             text.push_str("  vsync off");
         }
@@ -104,6 +116,14 @@ fn glyph(c: char) -> &'static [&'static [(f64, f64)]] {
         'x' => &[&[(0.0, 0.0), (1.0, 1.0)], &[(0.0, 1.0), (1.0, 0.0)]],
         'y' => &[&[(0.0, 1.0), (0.5, 0.25)], &[(1.0, 1.0), (0.3, -0.5)]],
         'u' => &[&[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]],
+        'r' => &[&[(0.0, 0.0), (0.0, 1.0), (0.9, 1.0)]],
+        'd' => &[&[(1.0, 1.6), (1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0)]],
+        't' => &[&[(0.4, 1.5), (0.4, 0.0), (0.9, 0.0)], &[(0.0, 1.0), (0.9, 1.0)]],
+        'i' => &[&[(0.5, 0.0), (0.5, 1.0)], &[(0.5, 1.35), (0.5, 1.45)]],
+        'l' => &[&[(0.5, 1.6), (0.5, 0.0)]],
+        '-' => &[&[(0.15, 0.7), (0.85, 0.7)]],
+        'e' => &[&[(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]],
+        '%' => &[&[(0.0, 0.0), (1.0, 1.6)], &[(0.1, 1.5), (0.3, 1.5), (0.3, 1.2), (0.1, 1.2), (0.1, 1.5)], &[(0.7, 0.4), (0.9, 0.4), (0.9, 0.1), (0.7, 0.1), (0.7, 0.4)]],
         '(' => &[&[(0.7, 1.7), (0.35, 1.2), (0.35, 0.0), (0.7, -0.4)]],
         ')' => &[&[(0.3, 1.7), (0.65, 1.2), (0.65, 0.0), (0.3, -0.4)]],
         _ => &[],

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use vello::kurbo::Point;
+use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu::{self, CurrentSurfaceTexture};
@@ -24,6 +24,112 @@ struct RenderState {
     surface: RenderSurface<'static>,
     window: Arc<Window>,
     renderer: Renderer,
+    /// Vello renders here, possibly below screen resolution; it's then
+    /// scaled up onto the screen with linear filtering.
+    target: Option<(u32, u32, wgpu::TextureView)>,
+    upscaler: wgpu::util::TextureBlitter,
+}
+
+/// Keeps the game at 60 FPS on slow devices. If frames are slow and the CPU
+/// is the limit, the drawing detail drops (see `paint::set_detail`); if the
+/// CPU has time to spare, the GPU is the limit and the render resolution
+/// drops instead. Each drop is checked: if it didn't help, it's undone and
+/// left alone for a while. Quality comes back when there's headroom.
+struct Resolution {
+    scale: f64,
+    detail: u8,
+    /// Scale at which frames last got too slow; we stay a bit below it.
+    ceiling: f64,
+    /// Smoothed frame rate.
+    avg: f64,
+    good_streak: u32,
+    /// After a drop: the frame rate, scale and detail before it.
+    check: Option<(f64, f64, u8)>,
+    /// Measurements are ignored until then (startup and resizes are slow).
+    settle_until: Instant,
+    /// No more drops until then (the last one didn't help).
+    hold_until: Instant,
+}
+
+impl Resolution {
+    const MIN: f64 = 0.35;
+    /// Rendering more pixels than this at startup starts scaled down.
+    const START_BUDGET: f64 = 3_500_000.0;
+    /// Below this we act; the goal is at least 60.
+    const SLOW_FPS: f64 = 57.0;
+    /// CPU time per frame above which the CPU counts as the limit (of 16.7 ms).
+    const CPU_BOUND_MS: f64 = 11.0;
+
+    fn initial(pixels: f64) -> Self {
+        let now = Instant::now();
+        Self {
+            scale: (Self::START_BUDGET / pixels.max(1.0)).sqrt().clamp(Self::MIN, 1.0),
+            detail: 0,
+            ceiling: 1.0,
+            avg: 0.0,
+            good_streak: 0,
+            check: None,
+            settle_until: now + web_time::Duration::from_secs(2),
+            hold_until: now,
+        }
+    }
+
+    fn settle(&mut self, secs: f64) {
+        self.settle_until = Instant::now() + web_time::Duration::from_secs_f64(secs);
+        self.good_streak = 0;
+        self.avg = 0.0;
+    }
+
+    /// Called twice a second with the measured frame rate and CPU time.
+    fn adapt(&mut self, fps: f64, cpu_ms: f64, vsync: bool) {
+        let now = Instant::now();
+        if !vsync || now < self.settle_until {
+            return; // Benchmarking, or still warming up.
+        }
+        self.avg = if self.avg == 0.0 { fps } else { self.avg * 0.6 + fps * 0.4 };
+
+        if let Some((before, scale, detail)) = self.check.take() {
+            if self.avg < before * 1.06 && self.avg < Self::SLOW_FPS {
+                // That didn't make it faster: undo it.
+                self.scale = scale;
+                self.detail = detail;
+                crate::paint::set_detail(detail);
+                self.hold_until = now + web_time::Duration::from_secs(15);
+                self.settle(1.0);
+                return;
+            }
+        }
+        if self.avg < Self::SLOW_FPS && now >= self.hold_until {
+            let (scale, detail) = (self.scale, self.detail);
+            let cpu_bound = cpu_ms > Self::CPU_BOUND_MS;
+            if (cpu_bound || self.scale <= Self::MIN) && self.detail < crate::paint::MAX_DETAIL_DROP {
+                self.detail += 1;
+                crate::paint::set_detail(self.detail);
+            } else if self.scale > Self::MIN {
+                // GPU time scales with pixel count, i.e. with scale²: aim for 60.
+                self.ceiling = scale;
+                self.scale = (scale * (self.avg / 60.0).sqrt() * 0.95).clamp(Self::MIN, 1.0);
+            } else {
+                return; // Nothing left to give.
+            }
+            self.check = Some((self.avg, scale, detail));
+            self.settle(1.5);
+        } else if self.avg > 58.5 && cpu_ms < Self::CPU_BOUND_MS * 0.7 {
+            self.good_streak += 1;
+            if self.good_streak >= 4 {
+                self.good_streak = 0;
+                if self.scale < 1.0 {
+                    // Step up, but not quite back to where it got slow; the
+                    // ceiling slowly relaxes so we retry now and then.
+                    self.ceiling = (self.ceiling + 0.03).min(1.0);
+                    self.scale = (self.scale * 1.1).min(self.ceiling * 0.97).max(self.scale).min(1.0);
+                } else if self.detail > 0 {
+                    self.detail -= 1;
+                    crate::paint::set_detail(self.detail);
+                }
+            }
+        }
+    }
 }
 
 /// GPU setup finished (it's asynchronous on the web).
@@ -41,6 +147,7 @@ struct App {
     gamepads: Gamepads,
     touch: TouchControls,
     stats: FrameStats,
+    resolution: Resolution,
     vsync: bool,
     last_frame: Instant,
 }
@@ -52,6 +159,11 @@ async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(Render
         .await
         .map_err(|e| format!("failed to create surface: {e}"))?;
     let device = &context.devices[surface.dev_id].device;
+    // GPU validation errors would otherwise vanish silently (a blank screen).
+    device.on_uncaptured_error(Arc::new(|err: wgpu::Error| show_error(&format!("GPU error: {err}"))));
+    let upscaler = wgpu::util::TextureBlitterBuilder::new(device, surface.format)
+        .sample_type(wgpu::FilterMode::Linear)
+        .build();
     let renderer = Renderer::new(
         device,
         RendererOptions {
@@ -60,7 +172,7 @@ async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(Render
         },
     )
     .map_err(|e| format!("failed to create renderer: {e}"))?;
-    Ok((context, RenderState { surface, window, renderer }))
+    Ok((context, RenderState { surface, window, renderer, target: None, upscaler }))
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -102,6 +214,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let (context, state) = *ready;
                 let size = state.window.inner_size();
                 self.touch.resize(size.width as f64, size.height as f64);
+                self.resolution = Resolution::initial(size.width as f64 * size.height as f64);
                 state.window.request_redraw();
                 self.context = Some(context);
                 self.state = Some(state);
@@ -150,11 +263,14 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 context.resize_surface(&mut state.surface, size.width, size.height);
                 self.touch.resize(size.width as f64, size.height as f64);
+                self.resolution.settle(2.0);
                 state.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                let width = state.surface.config.width;
-                let height = state.surface.config.height;
+                let (screen_w, screen_h) = (state.surface.config.width, state.surface.config.height);
+                let scale = self.resolution.scale;
+                let width = ((screen_w as f64 * scale).round() as u32).max(1);
+                let height = ((screen_h as f64 * scale).round() as u32).max(1);
                 let work_start = Instant::now();
                 self.game.pad = Input::merge(self.gamepads.poll(), self.touch.input());
                 let now = Instant::now();
@@ -167,17 +283,35 @@ impl ApplicationHandler<UserEvent> for App {
                 hot(|| game.update(dt));
                 scene.reset();
                 hot(|| game.draw(scene, width as f64, height as f64));
-                self.touch.draw(scene);
-                self.stats.draw(scene, width as f64, height as f64, self.vsync);
+                // Touch controls are laid out in screen pixels.
+                let mut overlay = Scene::new();
+                self.touch.draw(&mut overlay);
+                scene.append(&overlay, Some(Affine::scale(scale)));
+                self.stats.draw(scene, width as f64, height as f64, self.vsync, scale);
 
                 let handle = &context.devices[state.surface.dev_id];
+                if !matches!(&state.target, Some((w, h, _)) if *w == width && *h == height) {
+                    let texture = handle.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("render target"),
+                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    });
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    state.target = Some((width, height, view));
+                }
+                let target_view = &state.target.as_ref().expect("target was just created").2;
                 state
                     .renderer
                     .render_to_texture(
                         &handle.device,
                         &handle.queue,
                         &self.scene,
-                        &state.surface.target_view,
+                        target_view,
                         &vello::RenderParams {
                             base_color: Color::from_rgb8(0x10, 0x12, 0x1c),
                             width,
@@ -203,16 +337,14 @@ impl ApplicationHandler<UserEvent> for App {
                 let mut encoder = handle
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-                state
-                    .surface
-                    .blitter
-                    .copy(&handle.device, &mut encoder, &state.surface.target_view, &view);
+                state.upscaler.copy(&handle.device, &mut encoder, target_view, &view);
                 handle.queue.submit([encoder.finish()]);
                 let work = work_start.elapsed().as_secs_f64();
                 state.window.pre_present_notify();
                 frame.present();
 
                 if let Some(fps) = self.stats.frame(work) {
+                    self.resolution.adapt(fps, self.stats.cpu_ms(), self.vsync);
                     state.window.set_title(&format!(
                         "CamelJon — {fps:.0} FPS (max {:.0})",
                         self.stats.possible_fps()
@@ -238,18 +370,22 @@ fn hot<R>(f: impl FnMut() -> R) -> R {
     }
 }
 
-fn show_error(err: &str) {
+pub(crate) fn show_error(err: &str) {
     eprintln!("cameljon: {err}");
     #[cfg(target_arch = "wasm32")]
     if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
-        body.set_inner_html(&format!(
-            "<div style=\"font:18px sans-serif;padding:2em;color:#3b2a1e;max-width:40em\">\
-             <p>Camel Joe needs WebGPU, which this browser doesn't have turned on.</p>\
+        let help = if err.starts_with("failed to create") {
+            "<p>Camel Joe needs WebGPU, which this browser doesn't have turned on.</p>\
              <p>It works out of the box in Chrome, Edge and Safari on Windows, macOS, Android and iOS.</p>\
              <p>On Linux, Chromium-based browsers (Chrome, Vivaldi, Brave, Edge) need two flags: \
              open <code>chrome://flags</code> (or <code>vivaldi://flags</code>), enable \
-             <b>Unsafe WebGPU Support</b> and <b>Vulkan</b>, then restart the browser.</p>\
-             <p><small>{err}</small></p></div>"
+             <b>Unsafe WebGPU Support</b> and <b>Vulkan</b>, then restart the browser.</p>"
+        } else {
+            "<p>Something went wrong. Please report this message:</p>"
+        };
+        body.set_inner_html(&format!(
+            "<div style=\"font:18px sans-serif;padding:2em;color:#3b2a1e;max-width:40em;\
+             overflow-wrap:anywhere\">{help}<pre style=\"white-space:pre-wrap\">{err}</pre></div>"
         ));
     }
 }
@@ -267,6 +403,7 @@ pub fn run() {
         gamepads: Gamepads::new(),
         touch: TouchControls::default(),
         stats: FrameStats::default(),
+        resolution: Resolution::initial(1.0),
         vsync: true,
         last_frame: Instant::now(),
     };

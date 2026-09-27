@@ -3,7 +3,8 @@
 //!
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
 //! L R U D J T (left, right, up, down, jump, tongue) or `-` for none.
-//! A step `@N` starts from checkpoint N instead.
+//! A step `@N` starts from checkpoint N instead. Environment variables:
+//! `CAMELJON_SIZE=WxH`, `CAMELJON_DETAIL=0..2`, `CAMELJON_GPU_BENCH=1`.
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::peniko::Color;
@@ -13,8 +14,8 @@ use vello::{AaConfig, Renderer, RendererOptions, Scene};
 use crate::game::Game;
 use crate::terminal::Target;
 
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 720;
+/// Default image size; override with e.g. `CAMELJON_SIZE=1080x2400`.
+const DEFAULT_SIZE: (u32, u32) = (1280, 720);
 
 pub fn run(out: &str, script: &str) {
     if let Err(err) = run_inner(out, script) {
@@ -25,6 +26,10 @@ pub fn run(out: &str, script: &str) {
 
 fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut game = Game::new();
+    // Detail level to test the low-detail modes: `CAMELJON_DETAIL=2`.
+    if let Some(level) = std::env::var("CAMELJON_DETAIL").ok().and_then(|v| v.parse().ok()) {
+        crate::paint::set_detail(level);
+    }
     for step in script.split_whitespace() {
         if let Some(n) = step.strip_prefix('@') {
             game.warp(n.parse()?);
@@ -56,14 +61,24 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
             ..Default::default()
         },
     )?;
-    let target = Target::new(device, WIDTH, HEIGHT);
+    let (width, height) = std::env::var("CAMELJON_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or(DEFAULT_SIZE);
+    let target = Target::new(device, width, height);
+    if std::env::var("CAMELJON_GPU_BENCH").is_ok() {
+        gpu_bench(&mut game, &mut renderer, device, queue, &target, width, height)?;
+    }
     let mut scene = Scene::new();
     // Time building the scene (the CPU side of a frame), averaged.
     let runs = 20;
     let start = web_time::Instant::now();
     for _ in 0..runs {
         scene.reset();
-        game.draw(&mut scene, WIDTH as f64, HEIGHT as f64);
+        game.draw(&mut scene, width as f64, height as f64);
     }
     eprintln!("scene build: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
     renderer.render_to_texture(
@@ -73,14 +88,64 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         &target.view,
         &vello::RenderParams {
             base_color: Color::BLACK,
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
             antialiasing_method: AaConfig::Area,
         },
     )?;
     let rgba = target.read_pixels(device, queue)?;
-    let mut ppm = format!("P6\n{WIDTH} {HEIGHT}\n255\n").into_bytes();
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     ppm.extend(rgba.chunks(4).flat_map(|p| [p[0], p[1], p[2]]));
     std::fs::write(out, ppm)?;
+    Ok(())
+}
+
+/// Times the GPU side of a frame for the full scene and with parts left out,
+/// to see what the GPU spends its time on.
+fn gpu_bench(
+    game: &mut Game,
+    renderer: &mut Renderer,
+    device: &vello::wgpu::Device,
+    queue: &vello::wgpu::Queue,
+    target: &Target,
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::game::{SKIP, SKIP_BACKGROUND, SKIP_GRADE, SKIP_JOE, SKIP_WORLD};
+    use std::sync::atomic::Ordering;
+    let variants = [
+        ("full frame", 0),
+        ("without background", SKIP_BACKGROUND),
+        ("without platforms/props", SKIP_WORLD),
+        ("without Joe", SKIP_JOE),
+        ("without lighting grade", SKIP_GRADE),
+        ("empty", SKIP_BACKGROUND | SKIP_WORLD | SKIP_JOE | SKIP_GRADE),
+    ];
+    let mut scene = Scene::new();
+    for (name, skip) in variants {
+        SKIP.store(skip, Ordering::Relaxed);
+        scene.reset();
+        game.draw(&mut scene, width as f64, height as f64);
+        let params = vello::RenderParams {
+            base_color: Color::BLACK,
+            width,
+            height,
+            antialiasing_method: AaConfig::Area,
+        };
+        let mut render = || -> Result<(), Box<dyn std::error::Error>> {
+            renderer.render_to_texture(device, queue, &scene, &target.view, &params)?;
+            device.poll(vello::wgpu::PollType::wait_indefinitely())?;
+            Ok(())
+        };
+        render()?; // Warm-up.
+        let runs = 20;
+        let start = web_time::Instant::now();
+        for _ in 0..runs {
+            render()?;
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!("gpu {name:>26}: {ms:6.2} ms");
+    }
+    SKIP.store(0, Ordering::Relaxed);
     Ok(())
 }

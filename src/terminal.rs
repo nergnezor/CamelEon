@@ -149,7 +149,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
         last_frame = now;
         scene.reset();
         game.draw(&mut scene, width as f64, height as f64);
-        stats.draw(&mut scene, width as f64, height as f64, true);
+        stats.draw(&mut scene, width as f64, height as f64, true, 1.0);
 
         renderer.render_to_texture(
             device,

@@ -5,7 +5,7 @@
 //! Wobble is a noise field anchored to each object, so a shape keeps the same
 //! irregular edge from frame to frame while the camera moves.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Rect, Stroke, Vec2};
@@ -72,6 +72,20 @@ pub fn set_view(w: f64, h: f64, zoom: f64) {
     VIEW_H.store(h.to_bits(), Ordering::Relaxed);
 }
 
+/// Detail level, lowered on slow devices to keep 60 FPS:
+/// 0 = full, 1 = single-layer washes and no paper, 2 = straight edges too
+/// (no wobble), fewer background trees and no sun bloom.
+static DETAIL: AtomicU8 = AtomicU8::new(0);
+pub const MAX_DETAIL_DROP: u8 = 2;
+
+pub fn set_detail(level: u8) {
+    DETAIL.store(level.min(MAX_DETAIL_DROP), Ordering::Relaxed);
+}
+
+pub fn detail() -> u8 {
+    DETAIL.load(Ordering::Relaxed)
+}
+
 fn zoom() -> f64 {
     f64::from_bits(ZOOM.load(Ordering::Relaxed))
 }
@@ -97,6 +111,9 @@ fn noise2(x: f64, y: f64, seed: u64) -> f64 {
 /// the object) and scaled with the zoom, so the irregular edge sticks to the
 /// object instead of shimmering when the camera pans or zooms.
 pub fn wobble(path: &BezPath, amp: f64, seed: u64, anchor: Point) -> BezPath {
+    if detail() >= 2 {
+        return path.clone();
+    }
     let mut polys: Vec<(Vec<Point>, bool)> = Vec::new();
     flatten(path, 0.8, |el| match el {
         PathEl::MoveTo(p) => polys.push((vec![p], false)),
@@ -192,7 +209,7 @@ pub fn wash_with_edge(
 ) {
     let amp = (size * 0.035).clamp(0.3, 6.0);
     let main = wobble(path, amp, seed, anchor);
-    if size < 40.0 {
+    if size < 40.0 || detail() >= 1 {
         // Small shapes: a single layer looks the same and costs half.
         scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.9), None, &main);
     } else {
@@ -200,7 +217,8 @@ pub fn wash_with_edge(
         scene.fill(Fill::NonZero, Affine::IDENTITY, color.with_alpha(0.4), None, &wobble(path, amp * 1.8, seed ^ 0x55, anchor));
     }
     if let Some(g) = glaze {
-        scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &wobble(path, amp * 0.6, seed ^ 0x77, anchor));
+        let glazed = if detail() >= 1 { main.clone() } else { wobble(path, amp * 0.6, seed ^ 0x77, anchor) };
+        scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &glazed);
     }
     let edge = (size * 0.03).clamp(0.8, 3.5);
     scene.stroke(
@@ -305,8 +323,10 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     let sun = Point::new(w * SUN.0, h * SUN.1);
 
     scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, id, &rect);
-    let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
-    scene.fill(Fill::NonZero, id, &paper, None, &rect);
+    if detail() == 0 {
+        let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
+        scene.fill(Fill::NonZero, id, &paper, None, &rect);
+    }
     let away = Point::new(w * (1.0 - SUN.0) - w * 0.3, h * 1.1);
     let dusk = Gradient::new_linear(sun, away).with_stops([
         (0.0, Color::from_rgb8(0xe6, 0xe0, 0xde)),
@@ -322,6 +342,9 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     scene.fill(Fill::NonZero, id, &vignette, None, &rect);
     scene.pop_layer();
 
+    if detail() >= 2 {
+        return;
+    }
     scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Screen), 1.0, id, &rect);
     let bloom = Gradient::new_radial(sun, (h * 0.75) as f32).with_stops([
         (0.0, Color::from_rgb8(0xff, 0xc8, 0x90).with_alpha(0.45)),
