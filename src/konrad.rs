@@ -77,8 +77,8 @@ pub fn skeleton() -> Skeleton {
         b(ROOT, 0.0, 0.95, 0.0),                    // PELVIS
         b(PELVIS, 0.0, 0.18, 0.0),                  // SPINE
         b(SPINE, 0.0, 0.2, 0.0),                    // CHEST
-        b(CHEST, 0.0, 0.15, 0.01),                  // NECK
-        b(NECK, 0.0, 0.13, 0.02),                   // HEAD
+        b(CHEST, 0.0, 0.12, 0.01),                  // NECK
+        b(NECK, 0.0, 0.11, 0.02),                   // HEAD
         b(CHEST, -0.19, 0.1, 0.0),                  // SHOULDER_L
         b(SHOULDER_L, 0.0, -0.29, 0.0),             // ELBOW_L
         b(ELBOW_L, 0.0, -0.27, 0.0),                // HAND_L
@@ -669,7 +669,7 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair_image: Option<&
     let mut hair_frame = None;
     match hair_image {
         Some(image) => {
-            let frame = hair_strands(look, head_c, hair_fwd, up, head_px);
+            let frame = hair_strands(look, head_c, hair_fwd, fwd, up, head_px);
             head_parts.push(Part::Image(image.clone(), frame.transform()));
             hair_frame = Some(frame);
         }
@@ -834,7 +834,9 @@ fn rand(i: usize, k: u64) -> f64 {
 /// the scalp, sweeps out and round to fill the volume, and trails, bounces
 /// and sways with his motion like the vector locks. Back layers come first
 /// and are darker; the front layers are brighter.
-fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -> HairFrame {
+/// `fwd` is the hair's heading, which lags behind the face's (`face_fwd`)
+/// when he turns; the beard follows the face.
+fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, face_fwd: Vec2, up: Vec2, head_px: f64) -> HairFrame {
     let at = |x: f64, y: f64| head_c + (fwd * x + up * y) * head_px;
     let (cx, cy, rx, ry) = (-0.01, 0.02, 0.1, 0.125);
     let on_head = |a: f64, r: f64| (cx + rx * r * a.cos(), cy + ry * r * a.sin());
@@ -916,6 +918,44 @@ fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -
             width: head_px * (0.013 + rand(k, 7) * 0.008),
             color: color(0.8 + 0.25 * rho + (rand(k, 8) - 0.5) * 0.2),
             seed: rand(k, 9) as f32,
+        });
+        i += 1;
+    }
+
+    // A short full beard along the jaw and chin, with a moustache under the
+    // nose, growing down and a little forward.
+    let on_face = |x: f64, y: f64| head_c + (face_fwd * x + up * y) * head_px;
+    const JAW: [(f64, f64); 5] = [(-0.04, 0.0), (-0.035, -0.05), (0.0, -0.085), (0.05, -0.102), (0.09, -0.07)];
+    let jaw = |u: f64| {
+        let f = u * (JAW.len() - 1) as f64;
+        let k = (f as usize).min(JAW.len() - 2);
+        let (a, b, w) = (JAW[k], JAW[k + 1], f - k as f64);
+        (a.0 + (b.0 - a.0) * w, a.1 + (b.1 - a.1) * w)
+    };
+    for n in 0..260 {
+        let k = 10_000 + n;
+        let moustache = n >= 230;
+        let (x0, y0, len, tilt) = if moustache {
+            (0.07 + rand(k, 1) * 0.03, -0.034 - rand(k, 2) * 0.006, 0.022 + rand(k, 3) * 0.01, 0.35)
+        } else {
+            // Along the jaw, and up the cheek towards the sideburn.
+            let u = rand(k, 1);
+            let (jx, jy) = jaw(u);
+            let depth = rand(k, 2) * (0.03 + 0.03 * u);
+            (jx + (0.03 - jx) * depth * 4.0, jy + (-0.02 - jy) * depth * 4.0, 0.02 + rand(k, 3) * 0.025 * (0.5 + u), 0.15 + 0.45 * u)
+        };
+        let dir = Vec2::new(tilt.sin(), -tilt.cos());
+        let points: Vec<Point> = (0..4)
+            .map(|j| {
+                let t = j as f64 / 3.0;
+                on_face(x0 + dir.x * len * t, y0 + dir.y * len * t) + motion(i, t, dir) * 0.15
+            })
+            .collect();
+        strands.push(Strand {
+            points,
+            width: head_px * (0.008 + rand(k, 4) * 0.006),
+            color: color(0.75 + (rand(k, 5) - 0.5) * 0.25),
+            seed: rand(k, 6) as f32,
         });
         i += 1;
     }
