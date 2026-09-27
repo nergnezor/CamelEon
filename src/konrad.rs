@@ -324,6 +324,8 @@ pub struct Look {
     pub hair_facing: f64,
     /// Sunlight on him: 1 in the open, lower in shade or rain.
     pub light: f64,
+    /// Wind strength, 0..1: the hair flutters in it.
+    pub wind: f64,
 }
 
 /// Points on Konrad that the game needs.
@@ -845,13 +847,16 @@ fn hair_strands(look: &Look, head_c: Point, fwd: Vec2, up: Vec2, head_px: f64) -
         let root = if fringe { 0.55 + rand(i, 2) * 0.45 } else { 0.8 + rand(i, 2) * 2.9 };
         let curl = if fringe { -0.4 - rand(i, 3) * 0.35 } else { 0.1 + rand(i, 3) * 0.6 };
         let reach = if fringe { 1.2 + rand(i, 4) * 0.3 } else { 1.5 + rand(i, 4) * 0.85 } * (0.85 + 0.15 * layer);
-        let wobble = (look.time * 2.1 + i as f64 * 0.37).sin() * 0.03;
+        // Each strand sways on its own, more in the wind, with a faster
+        // flutter towards the tip.
+        let wobble = (look.time * 2.1 + i as f64 * 0.37).sin() * (0.03 + 0.1 * look.wind);
+        let flutter = |t: f64| (look.time * 7.0 + i as f64 * 1.9 + t * 3.0).sin() * (0.01 + 0.035 * look.wind) * t * t;
         // Each strand follows the simulated swing a bit differently.
         let swing = Vec2::new(look.hair_swing.x, -look.hair_swing.y) * head_px * (0.7 + 0.6 * rand(i, 9));
         let points: Vec<Point> = (0..8)
             .map(|j| {
                 let t = j as f64 / 7.0;
-                let a = root + (curl + wobble) * t;
+                let a = root + (curl + wobble) * t + flutter(t);
                 let r = 0.95 + (reach - 0.95) * (1.0 - (1.0 - t) * (1.0 - t));
                 let (x, y) = on_head(a, r);
                 at(x + trail * t * t, y + (bounce - 0.02) * t * t) + swing * (t * t)

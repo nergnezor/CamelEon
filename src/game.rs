@@ -558,6 +558,7 @@ impl Game {
             hair_swing: self.hair_swing,
             hair_facing: self.hair_facing,
             light: self.light_at(p.pos),
+            wind: self.weather.wind,
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).
