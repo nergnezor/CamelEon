@@ -12,6 +12,11 @@ use vello::kurbo::{flatten, Affine, BezPath, PathEl, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Blob, BlendMode, Brush, Color, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix};
 use vello::Scene;
 
+/// Flat style (early-90s cinematic platformer): solid colour shapes with no
+/// outlines, no watercolour edges and no paper. Set to false for the old
+/// watercolour-and-ink look.
+pub const FLAT: bool = true;
+
 pub const INK: Color = Color::from_rgb8(0x1f, 0x16, 0x1e);
 /// Shadows lean towards a cool violet, lit sides towards warm peach.
 const SHADOW_TINT: Color = Color::from_rgb8(0x4a, 0x3c, 0x7a);
@@ -111,7 +116,7 @@ fn noise2(x: f64, y: f64, seed: u64) -> f64 {
 /// the object) and scaled with the zoom, so the irregular edge sticks to the
 /// object instead of shimmering when the camera pans or zooms.
 pub fn wobble(path: &BezPath, amp: f64, seed: u64, anchor: Point) -> BezPath {
-    if detail() >= 2 {
+    if FLAT || detail() >= 2 {
         return path.clone();
     }
     let mut polys: Vec<(Vec<Point>, bool)> = Vec::new();
@@ -207,6 +212,15 @@ pub fn wash_with_edge(
     anchor: Point,
     edge_alpha: f32,
 ) {
+    if FLAT {
+        // Flat colour, like a 16-bit era painted background.
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, path);
+        if let Some(g) = glaze {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, path);
+        }
+        let _ = (size, seed, anchor, edge_alpha);
+        return;
+    }
     let amp = (size * 0.035).clamp(0.3, 6.0);
     let main = wobble(path, amp, seed, anchor);
     if size < 40.0 || detail() >= 1 {
@@ -261,6 +275,9 @@ pub fn tube_glaze(mid: Point, axis: Vec2, width: f64, color: Color) -> Gradient 
 
 /// A bold, confident ink outline, slightly uneven like a hand-inked cel.
 pub fn ink(scene: &mut Scene, path: &BezPath, size: f64, seed: u64, anchor: Point) {
+    if FLAT {
+        return;
+    }
     let width = (size * 0.055).clamp(1.2, 4.0);
     let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
     scene.stroke(&stroke, Affine::IDENTITY, INK, None, &wobble(path, width * 0.25, seed ^ 0x99, anchor));
@@ -323,7 +340,7 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     let sun = Point::new(w * SUN.0, h * SUN.1);
 
     scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Multiply), 1.0, id, &rect);
-    if detail() == 0 {
+    if detail() == 0 && !FLAT {
         let paper: Brush = ImageBrush::new(paper_texture().clone()).with_extend(Extend::Repeat).into();
         scene.fill(Fill::NonZero, id, &paper, None, &rect);
     }
@@ -342,7 +359,7 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
     scene.fill(Fill::NonZero, id, &vignette, None, &rect);
     scene.pop_layer();
 
-    if detail() >= 2 {
+    if detail() >= 2 || FLAT {
         return;
     }
     scene.push_layer(Fill::NonZero, BlendMode::from(Mix::Screen), 1.0, id, &rect);
@@ -359,14 +376,21 @@ pub fn grade(scene: &mut Scene, w: f64, h: f64) {
 /// shadow shape on the side away from the light, a small highlight and a bold
 /// ink outline, in the style of 1930s animation.
 pub fn cel(scene: &mut Scene, path: &BezPath, color: Color, shadow: Option<&Gradient>, size: f64, seed: u64, anchor: Point) {
+    let body = cel_fill(scene, path, color, shadow, size, seed, anchor);
+    let width = (size * 0.055).clamp(1.2, 4.0);
+    let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
+    scene.stroke(&stroke, Affine::IDENTITY, INK, None, &body);
+}
+
+/// The fill part of `cel`, without the outline (for figures that get one
+/// shared outline around their whole silhouette). Returns the painted shape.
+pub fn cel_fill(scene: &mut Scene, path: &BezPath, color: Color, shadow: Option<&Gradient>, size: f64, seed: u64, anchor: Point) -> BezPath {
     let body = wobble(path, (size * 0.012).clamp(0.3, 1.5), seed, anchor);
     scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &body);
     if let Some(g) = shadow {
         scene.fill(Fill::NonZero, Affine::IDENTITY, g, None, &body);
     }
-    let width = (size * 0.055).clamp(1.2, 4.0);
-    let stroke = Stroke::new(width).with_join(vello::kurbo::Join::Round).with_caps(vello::kurbo::Cap::Round);
-    scene.stroke(&stroke, Affine::IDENTITY, INK, None, &body);
+    body
 }
 
 /// Crisp cel shadow for round things: a hard-edged crescent away from the light.

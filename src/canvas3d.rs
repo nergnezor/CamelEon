@@ -88,6 +88,9 @@ pub struct Canvas3d<'a> {
     pub camera: Camera,
     items: Vec<(f64, u32, DrawFn<'a>)>,
     order: u32,
+    /// For a figure drawn as one group: outlines of all its parts, stroked
+    /// together behind the fills so only the outer silhouette shows.
+    outline: Option<(f64, BezPath)>,
 }
 
 impl<'a> Canvas3d<'a> {
@@ -96,6 +99,48 @@ impl<'a> Canvas3d<'a> {
             camera,
             items: Vec::new(),
             order: 0,
+            outline: None,
+        }
+    }
+
+    /// A canvas for one figure with a single outline of `width` pixels around
+    /// its whole silhouette instead of one per part. Draw it into another
+    /// canvas with `into_group`.
+    pub fn group(camera: Camera, width: f64) -> Self {
+        Self {
+            outline: Some((width, BezPath::new())),
+            ..Self::new(camera)
+        }
+    }
+
+    pub fn is_group(&self) -> bool {
+        self.outline.is_some()
+    }
+
+    /// Adds a shape to the group's shared silhouette outline.
+    pub fn add_outline(&mut self, path: &BezPath) {
+        if let Some((_, all)) = &mut self.outline {
+            all.extend(path.iter());
+        }
+    }
+
+    /// The whole group as one draw: the silhouette outline first, then the
+    /// parts back to front on top of it.
+    pub fn into_group(mut self) -> impl FnOnce(&mut Scene) + 'a {
+        self.items.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let outline = self.outline.take();
+        let items = self.items;
+        move |scene: &mut Scene| {
+            if let Some((width, all)) = outline.filter(|(w, _)| *w > 0.0) {
+                // Twice as wide: the inner half is covered by the fills.
+                let stroke = Stroke::new(width * 2.0)
+                    .with_join(Join::Round)
+                    .with_caps(vello::kurbo::Cap::Round);
+                scene.stroke(&stroke, Affine::IDENTITY, OUTLINE, None, &all);
+            }
+            for (_, _, draw) in items {
+                draw(scene);
+            }
         }
     }
 
@@ -118,25 +163,22 @@ impl<'a> Canvas3d<'a> {
         }
     }
 
-    pub fn sphere(&mut self, center: DVec3, radius: f64, color: Color) {
-        let p = self.camera.project(center);
-        let r = radius * p.scale;
-        let seed = color_seed(color, radius);
-        self.push(p.depth, move |scene| {
-            let circle = Circle::new(p.pos, r).to_path(0.1);
-            paint::cel(scene, &circle, color, Some(&paint::ball_cel(p.pos, r, color)), r * 2.0, seed, p.pos);
-        });
-    }
-
     /// An ellipsoid whose semi-axes are the columns of `axes` (world space).
     pub fn ellipsoid(&mut self, center: DVec3, axes: DMat3, color: Color) {
         let p = self.camera.project(center);
         let ellipse = self.project_ellipsoid(center, axes);
         let r = ellipse.radii().x.max(ellipse.radii().y);
         let seed = color_seed(color, axes.x_axis.length() + axes.y_axis.length());
+        let path = ellipse.to_path(0.1);
+        let grouped = self.is_group();
+        self.add_outline(&path);
         self.push(p.depth, move |scene| {
-            let path = ellipse.to_path(0.1);
-            paint::cel(scene, &path, color, Some(&paint::ball_cel(p.pos, r, color)), r * 2.0, seed, p.pos);
+            let shadow = paint::ball_cel(p.pos, r, color);
+            if grouped {
+                paint::cel_fill(scene, &path, color, Some(&shadow), r * 2.0, seed, p.pos);
+            } else {
+                paint::cel(scene, &path, color, Some(&shadow), r * 2.0, seed, p.pos);
+            }
         });
     }
 
@@ -173,36 +215,15 @@ impl<'a> Canvas3d<'a> {
         let axis = pb.pos - pa.pos;
         let depth = (pa.depth + pb.depth) / 2.0;
         let seed = color_seed(color, ra + rb * 3.0);
+        let grouped = self.is_group();
+        self.add_outline(&path);
         self.push(depth, move |scene| {
             let shadow = paint::tube_cel(pa.pos.midpoint(pb.pos), axis, width, color);
-            paint::cel(scene, &path, color, Some(&shadow), width * 2.0, seed, pa.pos);
-        });
-    }
-
-    /// A flat 3D line with a fixed world-space width, without outline.
-    pub fn line(&mut self, points: &[DVec3], width: f64, color: Color) {
-        if points.len() < 2 {
-            return;
-        }
-        let mut path = BezPath::new();
-        let mut depth = 0.0;
-        let mut scale = 0.0;
-        for (i, &p) in points.iter().enumerate() {
-            let pr = self.camera.project(p);
-            depth += pr.depth;
-            scale += pr.scale;
-            if i == 0 {
-                path.move_to(pr.pos);
+            if grouped {
+                paint::cel_fill(scene, &path, color, Some(&shadow), width * 2.0, seed, pa.pos);
             } else {
-                path.line_to(pr.pos);
+                paint::cel(scene, &path, color, Some(&shadow), width * 2.0, seed, pa.pos);
             }
-        }
-        let n = points.len() as f64;
-        let stroke = Stroke::new(width * scale / n)
-            .with_caps(vello::kurbo::Cap::Round)
-            .with_join(Join::Round);
-        self.push(depth / n, move |scene| {
-            scene.stroke(&stroke, Affine::IDENTITY, color, None, &path);
         });
     }
 
@@ -221,47 +242,12 @@ impl<'a> Canvas3d<'a> {
         });
         out
     }
-
-    /// Screen path of a closed 3D ellipse `c + a·cos t + b·sin t`, split into
-    /// the half facing the camera and the half facing away.
-    pub fn loop_halves(&self, c: DVec3, a: DVec3, b: DVec3) -> (BezPath, BezPath) {
-        let steps = 48;
-        let mut front = BezPath::new();
-        let mut back = BezPath::new();
-        let mut prev_front: Option<bool> = None;
-        for i in 0..=steps {
-            let t = i as f64 / steps as f64 * TAU;
-            let p = c + a * t.cos() + b * t.sin();
-            let is_front = p.z < c.z;
-            let screen = self.camera.point(p);
-            let path = if is_front { &mut front } else { &mut back };
-            if prev_front != Some(is_front) {
-                path.move_to(screen);
-            } else {
-                path.line_to(screen);
-            }
-            // Also continue the other half up to this point so there is no gap.
-            if let Some(was) = prev_front {
-                let other = if was { &mut front } else { &mut back };
-                if was != is_front && !other.elements().is_empty() {
-                    other.line_to(screen);
-                }
-            }
-            prev_front = Some(is_front);
-        }
-        (front, back)
-    }
 }
 
 /// A stable per-part seed so the watercolour edges don't shimmer.
 fn color_seed(color: Color, size: f64) -> u64 {
     let [r, g, b, _] = color.components;
     paint::seed(&[r as f64, g as f64, b as f64, size])
-}
-
-/// Outline width that scales gently with the shape's size.
-pub fn outline(size: f64) -> Stroke {
-    Stroke::new((size * 0.08).clamp(1.0, 4.0)).with_join(Join::Round)
 }
 
 pub fn mix(a: Color, b: Color, t: f64) -> Color {

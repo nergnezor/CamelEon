@@ -8,23 +8,23 @@ use crate::level::Level;
 
 const HALF_WIDTH: f64 = 0.35;
 const HEIGHT: f64 = 1.8;
-/// Height of the mouth above the feet; the tongue and swing rope attach here.
-pub const MOUTH_HEIGHT: f64 = 1.45;
+/// Height above the feet where the grappling line attaches (his raised hand).
+pub const MOUTH_HEIGHT: f64 = 1.9;
 
-const RUN_SPEED: f64 = 7.0;
+const RUN_SPEED: f64 = 14.0;
 /// Top speed multiplier gained by running flat out for a while.
 const MAX_BOOST: f64 = 1.45;
 /// How fast the boost builds while running flat out (per second).
 const BOOST_RATE: f64 = 0.28;
-const GROUND_ACCEL: f64 = 60.0;
-const AIR_ACCEL: f64 = 28.0;
+const GROUND_ACCEL: f64 = 120.0;
+const AIR_ACCEL: f64 = 56.0;
 const GRAVITY: f64 = 32.0;
 const JUMP_SPEED: f64 = 13.5;
 const MAX_FALL: f64 = 22.0;
 const COYOTE_TIME: f64 = 0.1;
 const JUMP_BUFFER: f64 = 0.12;
 const CLIMB_SPEED: f64 = 4.5;
-const TONGUE_SPEED: f64 = 45.0;
+const TONGUE_SPEED: f64 = 75.0;
 const TONGUE_RANGE: f64 = 7.5;
 const FLY_RANGE: f64 = 5.0;
 
@@ -179,7 +179,7 @@ impl Player {
         // Releasing jump early makes a shorter hop.
         let gravity = if self.vel.y > 0.0 && !c.jump { GRAVITY * 2.2 } else { GRAVITY };
         self.vel.y = (self.vel.y - gravity * dt).max(-MAX_FALL);
-        self.stride += self.vel.x.abs() * dt * 2.4;
+        self.stride += self.vel.x.abs().min(16.0) * dt * 1.6 + self.vel.x.abs() * dt * 0.3;
         self.move_and_collide(dt, level, events);
     }
 

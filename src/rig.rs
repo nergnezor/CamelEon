@@ -90,11 +90,6 @@ impl Solved {
         self.pos[bone] + self.root.rot * (self.model_dir(bone, local) * self.root.scale)
     }
 
-    /// A direction given in a bone's local frame, in world space (unscaled).
-    pub fn dir(&self, bone: usize, local: DVec3) -> DVec3 {
-        self.rot[bone] * local
-    }
-
     fn model_dir(&self, bone: usize, local: DVec3) -> DVec3 {
         self.root.rot.inverse() * (self.rot[bone] * local)
     }

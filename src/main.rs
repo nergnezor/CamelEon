@@ -1,4 +1,4 @@
-mod camel_joe;
+mod konrad;
 mod canvas3d;
 mod game;
 mod gamepad;

@@ -5,12 +5,12 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
 
-use crate::camel_joe::{self, Animator, Look, Motion};
+use crate::konrad::{self as hero, Animator, Look, Motion};
 use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
 use crate::level::{self, Level};
 use crate::player::{Controls, Player, State, TongueTarget, MOUTH_HEIGHT};
-use crate::rig::{Skeleton, Solved};
+use crate::rig::Skeleton;
 
 /// Profiling switch: parts of the frame to leave out (`SKIP_*` bit flags).
 /// Only set by the snapshot tool's GPU benchmark.
@@ -25,11 +25,13 @@ const CAMERA_DISTANCE: f64 = 11.0;
 /// World units visible vertically in the gameplay plane: standing still, and
 /// at full running speed (the camera zooms out the faster Joe goes).
 const VIEW_HEIGHT: f64 = 8.5;
-const VIEW_HEIGHT_FAST: f64 = 13.0;
+const VIEW_HEIGHT_FAST: f64 = 16.0;
 /// World units always visible across the screen (matters in portrait).
 const MIN_VIEW_WIDTH: f64 = 10.0;
 const MAX_STEP: f64 = 1.0 / 120.0;
-const TONGUE: Color = Color::from_rgb8(0xe8, 0x5f, 0x8a);
+/// The grappling line and its hook.
+const CABLE: Color = Color::from_rgb8(0x2a, 0x2e, 0x36);
+const HOOK: Color = Color::from_rgb8(0x9a, 0xa4, 0xb0);
 
 /// Which controls are currently held down, plus analog stick axes.
 #[derive(Default, Clone, Copy)]
@@ -101,7 +103,6 @@ pub struct Game {
     away: f64,
     squash: f64,
     squash_vel: f64,
-    camo: f64,
     camera: DVec2,
     view_height: f64,
     time: f64,
@@ -126,13 +127,12 @@ impl Game {
             fly_homes,
             level,
             checkpoint: 0,
-            skeleton: camel_joe::skeleton(),
+            skeleton: hero::skeleton(),
             animator: Animator::default(),
             turn: 1.0,
             away: 0.0,
             squash: 0.0,
             squash_vel: 0.0,
-            camo: 0.0,
             camera: start + DVec2::new(2.0, 1.7),
             view_height: VIEW_HEIGHT,
             time: 0.0,
@@ -243,21 +243,18 @@ impl Game {
         let climbing = matches!(self.player.state, State::Climbing(_));
         self.away += (climbing as u8 as f64 - self.away) * k;
 
-        // Chameleon camouflage when standing still.
-        let camo_target = if self.player.idle > 1.2 { 1.0 } else { 0.0 };
-        self.camo += (camo_target - self.camo) * (1.0 - (-dt * 2.0).exp());
 
         let motion = self.motion();
         self.animator.update(dt, &motion);
 
         // Zoom out with speed (slowly, so it breathes rather than pumps).
-        let speed = (self.player.vel.length() / 17.0).min(1.0);
+        let speed = (self.player.vel.length() / 34.0).min(1.0);
         let target_view = VIEW_HEIGHT + (VIEW_HEIGHT_FAST - VIEW_HEIGHT) * speed;
         self.view_height += (target_view - self.view_height) * (1.0 - (-dt * 1.2).exp());
 
         // Camera follows with a little look-ahead.
-        let target = self.player.pos + DVec2::new(self.turn * 2.0 + self.player.vel.x * 0.3, 1.7);
-        let ck = DVec2::new(1.0 - (-dt * 3.5).exp(), 1.0 - (-dt * 2.5).exp());
+        let target = self.player.pos + DVec2::new(self.turn * 2.0 + self.player.vel.x * 0.22, 1.7);
+        let ck = DVec2::new(1.0 - (-dt * 6.0).exp(), 1.0 - (-dt * 3.0).exp());
         self.camera += (target - self.camera) * ck;
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
 
@@ -290,33 +287,20 @@ impl Game {
 
     fn motion(&self) -> Motion {
         let p = &self.player;
-        let head = p.pos + DVec2::new(0.0, 1.45);
-        let look_at = |t: DVec2| DVec3::new(t.x - head.x, t.y - head.y, -1.2);
-        // The front eye watches the nearest fly; the back eye does its own thing.
-        let nearest = self
-            .flies
-            .iter()
-            .zip(&self.caught)
-            .filter(|(_, c)| !**c)
-            .map(|(f, _)| *f)
-            .min_by(|a, b| a.distance(head).total_cmp(&b.distance(head)));
-        let front = match (&p.tongue, nearest) {
-            (Some(t), _) => look_at(t.tip),
-            (None, Some(f)) if f.distance(head) < 8.0 => look_at(f),
-            _ => DVec3::new(p.facing * 0.5, 0.1, -1.0),
-        };
-        let back = DVec3::new((self.time * 0.7).sin() * 0.8, (self.time * 1.3).cos() * 0.5, -1.0);
-        let (left, right) = if p.facing > 0.0 { (back, front) } else { (front, back) };
         Motion {
             time: self.time,
             stride: p.stride,
-            run: (p.vel.x.abs() / 7.0).min(1.0),
+            run: (p.vel.x.abs() / 14.0).min(1.0),
             vel: DVec3::new(p.vel.x, p.vel.y, 0.0),
-            heading: camel_joe::heading(self.turn, self.away),
+            heading: hero::heading(self.turn, self.away),
             airborne: !p.on_ground,
             climbing: matches!(p.state, State::Climbing(_)),
             swinging: matches!(p.state, State::Swinging { .. }),
-            gaze: [left, right],
+            grappling: p.tongue.is_some(),
+            aim: p
+                .tongue
+                .map(|t| DVec3::new(t.tip.x - p.pos.x, t.tip.y - p.pos.y - 1.55, 0.0))
+                .unwrap_or(DVec3::Y),
         }
     }
 
@@ -459,32 +443,41 @@ impl Game {
             });
         }
 
-        let root = camel_joe::root(feet, rot, self.squash);
-        let solved = Solved::solve(&self.skeleton, &pose, root);
-        let look = Look {
-            time: self.time,
-            camo: self.camo,
-            tongue_out: p.tongue.is_some(),
-        };
-        let anchors = camel_joe::draw(canvas, &solved, &look);
+        // Cartoon speed stretch: the faster Joe goes, the longer and thinner.
+        let stretch = ((p.vel.x.abs() - 12.0) / 22.0).clamp(0.0, 1.0) * 0.7;
+        let root = hero::root(feet, rot, self.squash, stretch);
+        let standing = p.on_ground && matches!(p.state, State::Normal);
+        let solved = hero::plant(&self.skeleton, &pose, root, standing);
+        let look = Look { time: self.time };
+        // The hero is drawn as one group, sorted as a whole against the world
+        // (no outline: the flat, outline-free style of the era).
+        let hero_depth = canvas.depth_of(DVec3::new(p.pos.x, p.pos.y, 0.0));
+        let mut figure = Canvas3d::group(canvas.camera, 0.0);
+        let anchors = hero::draw(&mut figure, &solved, &look);
+        canvas.push(hero_depth, figure.into_group());
 
         if let Some(t) = &p.tongue {
+            // The grappling line: a thin cable from his hand, sagging a
+            // little, with a metal hook at the end.
             let cam = canvas.camera;
-            let a = cam.project(anchors.mouth);
+            let a = cam.project(anchors.hand);
             let b = cam.project(DVec3::new(t.tip.x, t.tip.y, 0.0));
-            let mid = a.pos.midpoint(b.pos) + Vec2::new(0.0, (a.pos - b.pos).hypot() * 0.08);
-            let width = 0.085 * a.scale;
-            let tip_r = 0.11 * b.scale;
+            let sag = if matches!(p.state, State::Swinging { .. }) { 0.0 } else { 0.06 };
+            let mid = a.pos.midpoint(b.pos) + Vec2::new(0.0, (a.pos - b.pos).hypot() * sag);
+            let width = (0.025 * a.scale).max(1.2);
+            let hook = 0.09 * b.scale;
             canvas.push(a.depth - 0.05, move |scene| {
                 let mut path = BezPath::new();
                 path.move_to(a.pos);
                 path.quad_to(mid, b.pos);
-                let round = |w: f64| Stroke::new(w).with_caps(vello::kurbo::Cap::Round);
-                scene.stroke(&round(width + 3.0), Affine::IDENTITY, OUTLINE, None, &path);
-                scene.stroke(&round(width), Affine::IDENTITY, TONGUE, None, &path);
-                let tip = Circle::new(b.pos, tip_r);
-                scene.fill(Fill::NonZero, Affine::IDENTITY, TONGUE, None, &tip);
-                scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, OUTLINE, None, &tip);
+                scene.stroke(&Stroke::new(width), Affine::IDENTITY, CABLE, None, &path);
+                let dir = (b.pos - mid).normalize();
+                let side = Vec2::new(-dir.y, dir.x);
+                let mut claw = BezPath::new();
+                claw.move_to(b.pos - dir * hook + side * hook * 0.7);
+                claw.line_to(b.pos + dir * hook * 0.4);
+                claw.line_to(b.pos - dir * hook - side * hook * 0.7);
+                scene.stroke(&Stroke::new(width * 1.6).with_caps(vello::kurbo::Cap::Round), Affine::IDENTITY, HOOK, None, &claw);
             });
         }
     }

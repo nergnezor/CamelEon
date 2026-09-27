@@ -13,19 +13,19 @@ use crate::canvas3d::{darken, lighten, mix, Camera, Canvas3d, OUTLINE};
 use crate::paint::{self, wash};
 use crate::level::{Block, BlockKind, ClimbKind, Level};
 
-const SKY_TOP: Color = Color::from_rgb8(0x6f, 0x7f, 0xb8);
-const SKY_HORIZON: Color = Color::from_rgb8(0xee, 0xb4, 0x96);
+const SKY_TOP: Color = Color::from_rgb8(0x16, 0x22, 0x3c);
+const SKY_HORIZON: Color = Color::from_rgb8(0x5a, 0x7a, 0x8e);
 /// Distance haze: a dusty peach-lilac, so far things take on the sky's colour.
-const FOG: Color = Color::from_rgb8(0xc8, 0xa8, 0xb8);
-const LEAF: Color = Color::from_rgb8(0x6a, 0xa8, 0x7c);
-const LEAF_DARK: Color = Color::from_rgb8(0x2e, 0x4a, 0x5a);
-const BARK: Color = Color::from_rgb8(0x9a, 0x6a, 0x5a);
+const FOG: Color = Color::from_rgb8(0x3e, 0x5a, 0x6a);
+const LEAF: Color = Color::from_rgb8(0x2e, 0x5e, 0x3e);
+const LEAF_DARK: Color = Color::from_rgb8(0x0e, 0x20, 0x1c);
+const BARK: Color = Color::from_rgb8(0x4a, 0x36, 0x2a);
 /// Blossom and foliage accents mixed into some trees.
 const ACCENTS: [Color; 4] = [
-    Color::from_rgb8(0xd9, 0x8c, 0xa8),
-    Color::from_rgb8(0xa6, 0x8c, 0xc8),
-    Color::from_rgb8(0x5f, 0xa8, 0xa0),
-    Color::from_rgb8(0xe8, 0xa8, 0x78),
+    Color::from_rgb8(0x1e, 0x4a, 0x44),
+    Color::from_rgb8(0x2c, 0x3e, 0x5c),
+    Color::from_rgb8(0x3a, 0x5e, 0x2e),
+    Color::from_rgb8(0x24, 0x3a, 0x30),
 ];
 
 /// Deterministic pseudo-random number in [0, 1) for an integer cell.
@@ -54,10 +54,10 @@ struct Layer {
 }
 
 const LAYERS: [Layer; 4] = [
-    Layer { z: 90.0, base: -6.0, amp: 22.0, color: Color::from_rgb8(0x7a, 0x6e, 0xa8), fog: 0.4, tree_spacing: 0.0, tree_size: 0.0, seed: 1 },
-    Layer { z: 40.0, base: -3.0, amp: 4.0, color: Color::from_rgb8(0x4f, 0x86, 0x8a), fog: 0.35, tree_spacing: 6.0, tree_size: 3.2, seed: 2 },
-    Layer { z: 18.0, base: -2.5, amp: 2.5, color: Color::from_rgb8(0x45, 0x78, 0x66), fog: 0.2, tree_spacing: 4.5, tree_size: 2.4, seed: 3 },
-    Layer { z: 7.0, base: -3.0, amp: 1.5, color: Color::from_rgb8(0x35, 0x5c, 0x55), fog: 0.08, tree_spacing: 3.8, tree_size: 2.0, seed: 4 },
+    Layer { z: 90.0, base: -6.0, amp: 22.0, color: Color::from_rgb8(0x22, 0x34, 0x4c), fog: 0.35, tree_spacing: 0.0, tree_size: 0.0, seed: 1 },
+    Layer { z: 40.0, base: -3.0, amp: 4.0, color: Color::from_rgb8(0x1a, 0x34, 0x38), fog: 0.3, tree_spacing: 6.0, tree_size: 3.2, seed: 2 },
+    Layer { z: 18.0, base: -2.5, amp: 2.5, color: Color::from_rgb8(0x14, 0x2c, 0x26), fog: 0.18, tree_spacing: 4.5, tree_size: 2.4, seed: 3 },
+    Layer { z: 7.0, base: -3.0, amp: 1.5, color: Color::from_rgb8(0x0e, 0x20, 0x1a), fog: 0.06, tree_spacing: 3.8, tree_size: 2.0, seed: 4 },
 ];
 
 /// Sky and background layers, drawn straight into the scene (always behind).
@@ -249,9 +249,9 @@ pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
 fn draw_block(canvas: &mut Canvas3d, b: &Block) {
     let cam = canvas.camera;
     let (top, front, side) = match b.kind {
-        BlockKind::Ground => (Color::from_rgb8(0x8e, 0xc4, 0x8a), Color::from_rgb8(0xb0, 0x76, 0x62), Color::from_rgb8(0x7e, 0x56, 0x5e)),
-        BlockKind::Stone => (Color::from_rgb8(0xa8, 0xc0, 0x9a), Color::from_rgb8(0x9a, 0x94, 0xb4), Color::from_rgb8(0x6e, 0x68, 0x8e)),
-        BlockKind::Log => (Color::from_rgb8(0xc0, 0x86, 0x74), Color::from_rgb8(0xa4, 0x6c, 0x62), Color::from_rgb8(0xe6, 0xc0, 0x9c)),
+        BlockKind::Ground => (Color::from_rgb8(0x3e, 0x62, 0x36), Color::from_rgb8(0x3a, 0x2a, 0x22), Color::from_rgb8(0x2a, 0x1e, 0x1a)),
+        BlockKind::Stone => (Color::from_rgb8(0x4a, 0x62, 0x44), Color::from_rgb8(0x4e, 0x58, 0x64), Color::from_rgb8(0x36, 0x3e, 0x4a)),
+        BlockKind::Log => (Color::from_rgb8(0x6a, 0x4a, 0x34), Color::from_rgb8(0x54, 0x3a, 0x2a), Color::from_rgb8(0x9a, 0x7a, 0x56)),
     };
     // Don't bother drawing far below the screen.
     let y0 = b.y0.max(cam.eye.y - 25.0);
@@ -521,24 +521,34 @@ pub fn fly_position(home: DVec2, time: f64, i: usize) -> DVec2 {
     home + DVec2::new((time * 1.9 + f).sin() * 0.35, (time * 2.7 + f * 2.0).cos() * 0.22)
 }
 
+/// A collectible energy cell: a small glowing crystal that pulses.
 fn draw_fly(canvas: &mut Canvas3d, pos: DVec2, time: f64, i: usize) {
     let cam = canvas.camera;
     let pr = cam.project(DVec3::new(pos.x, pos.y, -0.05));
     let s = pr.scale;
-    let flap = (time * 50.0 + i as f64).sin().abs();
+    let pulse = 0.85 + 0.15 * (time * 5.0 + i as f64).sin();
+    let turn = (time * 2.0 + i as f64).cos();
     canvas.push(pr.depth, move |scene| {
-        for side in [-1.0, 1.0] {
-            let wing = Ellipse::new(
-                pr.pos + Vec2::new(side * 0.07 * s, -0.08 * s),
-                (0.09 * s, 0.05 * s * (0.3 + flap)),
-                side * 0.5,
-            );
-            scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0xe8, 0xf4, 0xff).with_alpha(0.75), None, &wing);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, OUTLINE, None, &wing);
-        }
-        let body = Ellipse::new(pr.pos, (0.1 * s, 0.07 * s), 0.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0x2a, 0x33, 0x2a), None, &body);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0xd0, 0x30, 0x30), None, &Circle::new(pr.pos + Vec2::new(0.07 * s, -0.02 * s), 0.035 * s));
+        let glow = Gradient::new_radial(pr.pos, (0.45 * s * pulse) as f32).with_stops([
+            Color::from_rgb8(0x7a, 0xe8, 0xff).with_alpha(0.55),
+            Color::from_rgb8(0x7a, 0xe8, 0xff).with_alpha(0.0),
+        ]);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, &glow, None, &Circle::new(pr.pos, 0.45 * s * pulse));
+        // A spinning diamond: the width follows the turn.
+        let (w, h) = (0.1 * s * turn.abs().max(0.25), 0.16 * s);
+        let mut gem = BezPath::new();
+        gem.move_to(pr.pos + Vec2::new(0.0, -h));
+        gem.line_to(pr.pos + Vec2::new(w, 0.0));
+        gem.line_to(pr.pos + Vec2::new(0.0, h));
+        gem.line_to(pr.pos + Vec2::new(-w, 0.0));
+        gem.close_path();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0x4a, 0xc8, 0xe8), None, &gem);
+        let mut facet = BezPath::new();
+        facet.move_to(pr.pos + Vec2::new(0.0, -h));
+        facet.line_to(pr.pos + Vec2::new(w * turn.signum(), 0.0));
+        facet.line_to(pr.pos);
+        facet.close_path();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0xd8, 0xfa, 0xff), None, &facet);
     });
 }
 
