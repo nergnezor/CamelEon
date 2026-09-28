@@ -3,6 +3,7 @@
 //! looks.
 
 use glam::DVec2;
+use vello::peniko::Color;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum BlockKind {
@@ -60,8 +61,23 @@ pub struct Prop {
     pub z: f64,
 }
 
+/// A cloth banner hanging from `top` (the underside of a catwalk).
+#[derive(Clone, Copy)]
+pub struct BannerSpec {
+    pub x0: f64,
+    pub x1: f64,
+    pub top: f64,
+    pub length: f64,
+    pub z: f64,
+    /// The two colours of its stripes.
+    pub colors: [Color; 2],
+}
+
 pub struct Level {
     pub theme: Theme,
+    /// Where jellies live (see `soft`), standing on the ground.
+    pub jellies: Vec<DVec2>,
+    pub banners: Vec<BannerSpec>,
     pub blocks: Vec<Block>,
     pub props: Vec<Prop>,
     /// Trees behind the play area, for looks: x and the height of the trunk.
@@ -93,6 +109,10 @@ pub fn jungle() -> Level {
     Level {
         theme: Theme::Jungle,
         props: Vec::new(),
+        // Jellies to bounce on: one to find at the start, others for the
+        // flies up high.
+        jellies: vec![p(5.5, 0.0), p(36.0, 0.0), p(99.0, 0.0), p(139.0, 0.0), p(200.0, 0.0), p(275.0, 0.0)],
+        banners: Vec::new(),
         blocks: vec![
             // Invisible-ish walls at both ends.
             Block { x0: -16.0, x1: -8.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
@@ -201,6 +221,27 @@ pub fn dusk() -> Level {
     use PropKind::*;
     Level {
         theme: Theme::Dusk,
+        jellies: vec![p(12.5, 0.0), p(57.5, -0.8), p(100.0, 0.0), p(141.0, 0.0), p(200.0, 0.0), p(275.0, 0.0)],
+        banners: {
+            let banner = |x0: f64, x1: f64, catwalk_top: f64, length: f64, colors: [Color; 2]| BannerSpec {
+                x0,
+                x1,
+                top: catwalk_top - 0.35,
+                length,
+                z: 0.1,
+                colors,
+            };
+            let (red, cream) = (Color::from_rgb8(0xb8, 0x2a, 0x3a), Color::from_rgb8(0xe8, 0xd8, 0xc0));
+            let (teal, ink) = (Color::from_rgb8(0x1e, 0x8a, 0x90), Color::from_rgb8(0x24, 0x1c, 0x3a));
+            let (violet, gold) = (Color::from_rgb8(0x6a, 0x2e, 0x8c), Color::from_rgb8(0xf0, 0xb0, 0x40));
+            vec![
+                banner(32.2, 33.4, 3.8, 2.2, [red, cream]),
+                banner(90.4, 91.6, 5.0, 2.6, [teal, ink]),
+                banner(107.3, 108.5, 3.2, 2.0, [violet, gold]),
+                banner(129.8, 131.0, 2.4, 1.6, [red, cream]),
+                banner(147.0, 148.2, 2.4, 1.6, [teal, ink]),
+            ]
+        },
         blocks: vec![
             Block { x0: -16.0, x1: -8.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.2, kind: BlockKind::Stone },
             // The start roof.

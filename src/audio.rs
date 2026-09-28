@@ -19,6 +19,8 @@ pub enum Sfx {
     Jump { power: f32 },
     /// Touching down at `speed` (world units per second, downwards).
     Land { speed: f32 },
+    /// Bounced off a jelly; `power` 0..1.
+    Boing { power: f32 },
     /// A fly caught.
     Gulp,
     Checkpoint,
@@ -427,6 +429,11 @@ impl Synth {
                 let hard = ((speed - 3.0) / 18.0).clamp(0.0, 1.0);
                 self.add(Voice { len: 0.3, decay: 0.07 + 0.05 * hard, tone: 0.25 + 0.45 * hard, f0: 140.0, f1: 45.0, glide: 0.09, ..Voice::default() });
                 self.add(Voice { len: 0.2, decay: 0.04 + 0.03 * hard, noise: 0.2 + 0.45 * hard, n0: 900.0, n1: 350.0, q: 0.8, glide: 0.1, ..Voice::default() });
+            }
+            Sfx::Boing { power } => {
+                // A springy, wobbling rise and a soft squelch.
+                self.add(Voice { len: 0.45, decay: 0.16, tone: 0.2, f0: 150.0, f1: 420.0 + 260.0 * power, glide: 0.18, vibrato: 0.08, vibrato_rate: 13.0, ..Voice::default() });
+                self.add(Voice { len: 0.15, decay: 0.05, noise: 0.2, n0: 400.0, n1: 1400.0, q: 2.5, glide: 0.08, ..Voice::default() });
             }
             Sfx::Gulp => {
                 // Blip-bloop, and a sparkle.

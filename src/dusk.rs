@@ -862,23 +862,34 @@ pub fn draw_body_shadow(canvas: &mut Canvas3d, level: &Level, s: &Solved) {
         limb(FOOT_R, FOOT_R, 0.07).into_iter().map(|p| p + s.root.rot * DVec3::Z * 0.1).collect(),
     ];
     let feet = s.pos[FOOT_L].lerp(s.pos[FOOT_R], 0.5);
-    let reach = shadow_reach(hair.y + 0.3 - feet.y + 12.0);
+    draw_cast_shadow(canvas, level, &caster, feet, hair + DVec3::Y * 0.3);
+}
+
+/// Casts a moving thing's shadow onto every roof below it that it reaches,
+/// fading from its `base` towards its `top`.
+pub fn draw_cast_shadow(canvas: &mut Canvas3d, level: &Level, caster: &[Vec<DVec3>], base: DVec3, top: DVec3) {
+    let reach = shadow_reach(top.y - base.y + 12.0);
     let cam = canvas.camera;
     let receivers: Vec<Block> = level
         .blocks
         .iter()
-        .filter(|b| b.y1 <= feet.y + 0.05 && b.x1 > feet.x - reach && b.x0 < feet.x + 1.0)
+        .filter(|b| b.y1 <= base.y + 0.05 && b.x1 > base.x - reach && b.x0 < base.x + 1.0)
         .copied()
         .collect();
     let l = sun_dir();
     for b in receivers {
-        let path = shadow_path(&cam, &caster, b.y1);
+        let path = shadow_path(&cam, caster, b.y1);
         let slide = |p: DVec3| {
             let y = p.y.max(b.y1);
             cam.point(DVec3::new(p.x, y, p.z) - l * ((y - b.y1) / l.y))
         };
-        push_shadow(canvas, &b, path, Some((slide(feet), slide(hair))));
+        push_shadow(canvas, &b, path, Some((slide(base), slide(top))));
     }
+}
+
+/// The sun, for things lit in the dusk city.
+pub fn light() -> crate::soft::Light {
+    crate::soft::Light { screen: SUN_SCREEN_DIR, world: sun_dir(), rim: Color::from_rgb8(0xff, 0xa4, 0x68) }
 }
 
 // ---------------------------------------------------------------------------

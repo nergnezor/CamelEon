@@ -85,13 +85,14 @@ declared there too.
 |---|---|
 | `game.rs` | Game state and update loop: player, camera (look-ahead and zoom with speed), hair spring, breathing, effects; `draw` fills the layers |
 | `player.rs` | Movement: running with momentum boost, charged jump, coyote time, catching flies |
-| `level.rs` | Levels (`level::all()`, in order) and their theme: blocks, trees or props, flies, checkpoints |
+| `level.rs` | Levels (`level::all()`, in order) and their theme: blocks, trees or props, jellies, banners, flies, checkpoints |
 | `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch), drawing in a fixed layer order, hair strands and beard |
 | `rig.rs` | Bones, poses (slerp blending) and forward kinematics |
 | `canvas3d.rs` | Perspective camera and painter's-sorted 3D drawing onto a Vello scene |
 | `jungle.rs` | The jungle: parallax background, platforms with grass, trees, near foreground, energy cells, global wind |
 | `dusk.rs` | The dusk city: mesas, skylines, airship, maglev, traffic, industry; buildings, containers, catwalks, props; long shadows projected along the sunlight |
 | `noise.rs` | Deterministic 1D/2D gradient noise, fbm and ridged noise for irregular shapes |
+| `soft.rs` | Soft bodies: jellies (shape matching + pressure; Konrad bounces off them) and cloth banners (verlet grid, shaded per cell by its normal) |
 | `weather.rs` | Rain, wind gusts, fog, pit mist, leaves, fireflies, birds |
 | `paint.rs` | Drawing helpers and detail levels |
 | `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |
@@ -149,6 +150,10 @@ declared there too.
   to the roof and drawn just above it (`block_depth - 0.004`). Konrad's is cast
   from his solved skeleton. Keep the shadow sun (`dusk::sun_dir`) roughly
   consistent with the sun on screen (`dusk::SUN`).
+- Soft bodies step at the game's fixed 1/120 s. Banners are verlet: moving a
+  point also moves its velocity, so anything that pushes cloth must shift
+  `prev` along too, or the cloth gets flung. Jellies stand at z = 0.15, just
+  behind Konrad, so he passes in front of them (they only jiggle).
 - Keys: N skips to the next level (window and terminal).
 - Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
   single-threaded, and there's no hot reload.

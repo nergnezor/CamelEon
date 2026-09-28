@@ -12,6 +12,7 @@ mod noise;
 mod paint;
 mod player;
 mod rig;
+mod soft;
 mod stats;
 #[cfg(not(target_arch = "wasm32"))]
 mod snapshot;

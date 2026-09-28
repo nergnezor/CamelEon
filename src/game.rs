@@ -16,6 +16,7 @@ use crate::frame::{FrameInfo, Layers, Post};
 use crate::hair::{HairFrame, HairStyle};
 use crate::weather::{self, Weather};
 use crate::rig::Skeleton;
+use crate::soft::{self, Banner, Jelly};
 
 /// Profiling switch: parts of the frame to leave out (`SKIP_*` bit flags).
 /// Only set by the snapshot tool's GPU benchmark.
@@ -125,6 +126,8 @@ pub struct Game {
     won_at: Option<f64>,
     flash: f64,
     particles: Vec<Particle>,
+    jellies: Vec<Jelly>,
+    banners: Vec<Banner>,
     /// Sound effects since the frontend last collected them.
     pub sounds: Vec<Sfx>,
     /// Footfall counter, from the stride: a step sounds when it changes.
@@ -143,6 +146,12 @@ impl Game {
         let levels = level::all();
         let level_index = index % levels.len();
         let level = levels[level_index]();
+        let colors = match level.theme {
+            Theme::Jungle => [Color::from_rgb8(0x6e, 0xd0, 0x52), Color::from_rgb8(0x3a, 0xc8, 0xb0)],
+            Theme::Dusk => [Color::from_rgb8(0xff, 0x52, 0xb0), Color::from_rgb8(0x4a, 0xd8, 0xf0)],
+        };
+        let jellies = level.jellies.iter().enumerate().map(|(i, &at)| Jelly::new(at, colors[i % 2], i as u64 + 7)).collect();
+        let banners = level.banners.iter().enumerate().map(|(i, spec)| Banner::new(spec, i as u64 + 3)).collect();
         let start = level.checkpoints[0];
         let fly_homes = level.flies.clone();
         Self {
@@ -176,6 +185,8 @@ impl Game {
             won_at: None,
             flash: 0.0,
             particles: Vec::new(),
+            jellies,
+            banners,
             sounds: Vec::new(),
             footfall: 0,
             camo: 0.0,
@@ -225,6 +236,7 @@ impl Game {
 
         let events = self.player.update(dt, &controls, &self.level, &self.flies, &self.caught);
         self.step_sounds();
+        self.update_soft(dt, jump);
         if let Some(i) = events.caught_fly {
             self.sounds.push(Sfx::Gulp);
             self.caught[i] = true;
@@ -335,6 +347,29 @@ impl Game {
                     self.kick_up(feet, vx);
                 }
             }
+        }
+    }
+
+    /// Jellies and banners: Konrad bounces off the jellies, pushes through
+    /// both, and the wind flaps the banners.
+    fn update_soft(&mut self, dt: f64, jump_held: bool) {
+        let p = &mut self.player;
+        if !p.on_ground {
+            for jelly in &mut self.jellies {
+                if let Some(speed) = jelly.stomp(p.pos, p.vel.y, jump_held) {
+                    p.vel.y = speed;
+                    self.squash_vel -= 5.0;
+                    self.sounds.push(Sfx::Boing { power: ((speed - 14.0) / 11.0).clamp(0.0, 1.0) as f32 });
+                    break;
+                }
+            }
+        }
+        let player = (self.player.pos, self.player.vel);
+        for jelly in &mut self.jellies {
+            jelly.update(dt, &self.level, self.time, player);
+        }
+        for banner in &mut self.banners {
+            banner.update(dt, self.weather.wind, self.time, player);
         }
     }
 
@@ -559,6 +594,9 @@ impl Game {
                 weather::draw_rain(&mut canvas, &self.level, w, h, self.time, rain, wind);
             }
         }
+        if skip & SKIP_WORLD == 0 {
+            self.draw_soft(&mut canvas);
+        }
         let mut hair = None;
         if skip & SKIP_JOE == 0 {
             hair = self.draw_joe(&mut canvas, hair_style);
@@ -625,6 +663,31 @@ impl Game {
             }
         }
         light * (1.0 - 0.35 * self.weather.rain)
+    }
+
+    fn draw_soft(&self, canvas: &mut Canvas3d) {
+        let dusk = self.level.theme == Theme::Dusk;
+        let light = if dusk {
+            dusk::light()
+        } else {
+            soft::Light { screen: Vec2::new(0.55, -0.83), world: DVec3::new(0.4, 0.8, -0.45), rim: hero::RIM }
+        };
+        for jelly in &self.jellies {
+            soft::draw_jelly(canvas, jelly, self.time, light, self.player.pos);
+            if dusk {
+                let caster = vec![jelly.caster()];
+                let (base, top) = jelly.span();
+                dusk::draw_cast_shadow(canvas, &self.level, &caster, base, top);
+            }
+        }
+        for banner in &self.banners {
+            soft::draw_banner(canvas, banner, light);
+            if dusk {
+                let caster = vec![banner.caster()];
+                let (base, top) = banner.span();
+                dusk::draw_cast_shadow(canvas, &self.level, &caster, base, top);
+            }
+        }
     }
 
     fn draw_joe(&self, canvas: &mut Canvas3d, hair_style: HairStyle) -> Option<HairFrame> {

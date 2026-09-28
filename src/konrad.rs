@@ -320,7 +320,7 @@ fn far(c: Color) -> Color {
 }
 
 /// A smooth closed shape through `points` (Catmull-Rom spline).
-fn smooth_closed(points: &[Point]) -> BezPath {
+pub fn smooth_closed(points: &[Point]) -> BezPath {
     let n = points.len();
     let mut path = BezPath::new();
     path.move_to(points[0]);

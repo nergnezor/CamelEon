@@ -20,6 +20,7 @@ mod noise;
 mod paint;
 mod player;
 mod rig;
+mod soft;
 mod stats;
 mod touch;
 mod weather;
