@@ -97,6 +97,7 @@ declared there too.
 | `paint.rs` | Drawing helpers and detail levels |
 | `frame.rs` | `FrameRenderer`: renders the layers and runs the post passes |
 | `audio.rs` | Procedural sound: `Sfx` events and `Ambience` from the game, a small synth, cpal output |
+| `grass.rs` | Shader grass: blades packed as patches into a 2048×1024 atlas by a wgpu pass, each patch drawn by Vello as an image at its depth |
 | `hair.rs` | Shader hair: strands → wgpu pass → texture drawn by Vello as an image |
 | `window.rs` | winit window (desktop and web), input, adaptive resolution |
 | `terminal.rs` | kitty graphics protocol frontend |
@@ -109,7 +110,8 @@ declared there too.
    (background, rendered at half resolution) and `front` (world, Konrad, HUD,
    at full resolution). It returns `FrameInfo` with the hair strands and post
    settings.
-2. The hair pass draws the strands into a 512² texture.
+2. The hair pass draws the strands into a 512² texture, and the grass pass
+   draws the blades (instanced) into the grass atlas.
 3. Vello renders each layer to its own texture.
 4. A quarter-resolution pass does light shafts and bloom; a composite pass
    does depth of field (blurring far/mid), the dusk grade, vignette, sun glow

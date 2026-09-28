@@ -12,6 +12,7 @@ mod dusk;
 mod frame;
 mod game;
 mod gamepad;
+mod grass;
 mod hair;
 mod jungle;
 mod konrad;

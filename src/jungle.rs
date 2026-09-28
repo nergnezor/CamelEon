@@ -11,6 +11,7 @@ use vello::Scene;
 
 use crate::canvas3d::{darken, lighten, mix, Camera, Canvas3d, OUTLINE};
 use crate::paint::{self, wash};
+use crate::grass::{BladeShape, GrassFrame};
 use crate::level::{Block, BlockKind, Level};
 
 const SKY_TOP: Color = Color::from_rgb8(0x16, 0x22, 0x3c);
@@ -220,14 +221,14 @@ pub struct WorldView<'a> {
     pub rain: f64,
 }
 
-pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView) {
+pub fn draw_world(canvas: &mut Canvas3d, level: &Level, view: &WorldView, grass: &mut GrassFrame) {
     let cam = canvas.camera;
     let (vx0, vx1) = cam.visible_x(-1.5, view.screen_width);
     for b in &level.blocks {
         if b.x1 < vx0 - 2.0 || b.x0 > vx1 + 2.0 {
             continue;
         }
-        draw_block(canvas, b, (vx0, vx1), view);
+        draw_block(canvas, b, (vx0, vx1), view, grass);
     }
     for t in &level.trees {
         draw_trunk(canvas, t.x, t.y);
@@ -252,7 +253,7 @@ const OCCLUSION: Color = Color::from_rgb8(0x0c, 0x0a, 0x14);
 
 /// Draws a platform. `visible` is the range of x on screen, where grass
 /// tufts are drawn.
-fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &WorldView) {
+fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &WorldView, grass: &mut GrassFrame) {
     let cam = canvas.camera;
     let (top, front, side) = match b.kind {
         BlockKind::Ground => (Color::from_rgb8(0x3e, 0x62, 0x36), Color::from_rgb8(0x3a, 0x2a, 0x22), Color::from_rgb8(0x2a, 0x1e, 0x1a)),
@@ -426,7 +427,7 @@ fn draw_block(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Worl
         draw_puddles(canvas, b, visible, view, depth);
     }
     if b.kind != BlockKind::Log {
-        draw_tufts(canvas, b, top, visible, view);
+        draw_grass(canvas, b, top, visible, view, grass);
     }
     let seed = paint::seed(&[b.x0, b.y1]);
     canvas.push(depth, move |scene| {
@@ -537,10 +538,11 @@ fn draw_puddles(canvas: &mut Canvas3d, b: &Block, visible: (f64, f64), view: &Wo
     });
 }
 
-/// Grass tufts (moss on stone) along the top of a platform, swaying in the
-/// wind. They break up its straight edge. The row along the front edge is
-/// sorted on its own, so it can hide Konrad's feet as he walks behind it.
-fn draw_tufts(canvas: &mut Canvas3d, b: &Block, top: Color, visible: (f64, f64), view: &WorldView) {
+/// Grass (moss on stone) along the top of a platform: dense blades in rows
+/// from the front edge back, clumped, swaying in the wind and bending round
+/// Konrad, drawn by the grass shader. The front row is sorted on its own, so
+/// it can hide his feet as he walks behind it.
+fn draw_grass(canvas: &mut Canvas3d, b: &Block, top: Color, visible: (f64, f64), view: &WorldView, grass: &mut GrassFrame) {
     let cam = canvas.camera;
     let time = view.time;
     // Konrad pushes the grass aside where he stands or walks.
@@ -550,63 +552,62 @@ fn draw_tufts(canvas: &mut Canvas3d, b: &Block, top: Color, visible: (f64, f64),
     if x1 <= x0 {
         return;
     }
-    let (height, spacing) = if stone { (0.16, 0.5) } else { (0.34, 0.28) };
-    let colors = if stone {
-        [Color::from_rgb8(0x4e, 0x76, 0x3a), Color::from_rgb8(0x7a, 0xa6, 0x52)]
+    let (height, spacing) = if stone { (0.14, 0.07) } else { (0.36, 0.04) };
+    let (root, tip) = if stone {
+        (Color::from_rgb8(0x2e, 0x46, 0x26), Color::from_rgb8(0x86, 0xb0, 0x58))
     } else {
-        [darken(top, 0.12), lighten(top, 0.25)]
+        (darken(top, 0.15), lighten(top, 0.3))
     };
-    let sway = 0.08 + 0.25 * wind();
-    let base_x_of = |x: f64, k: i64| x + (k as f64 - 1.5) * 0.03;
-    // Rows: along the front edge, and two further back on the top.
-    for (row, dz) in [(0u64, 0.08), (1, 0.7), (2, 1.5)] {
+    // Some blades yellower, some bluer.
+    let (dry, lush) = (Color::from_rgb8(0xb4, 0xb8, 0x5c), Color::from_rgb8(0x4a, 0x86, 0x66));
+    let sway = 0.08 + 0.3 * wind();
+    let rgb = |c: Color| [c.components[0], c.components[1], c.components[2]];
+    for (row, dz) in [(0u64, 0.06), (1, 0.45), (2, 0.95), (3, 1.6)] {
         let z = b.z0 + dz;
         if z > b.z1 || (row > 0 && cam.eye.y < b.y1) {
             continue;
         }
-        let mut blades = [BezPath::new(), BezPath::new()];
-        let first = (x0 / spacing).floor() as i64;
-        let last = (x1 / spacing).ceil() as i64;
-        for i in first..=last {
+        let step = spacing * if row == 0 { 1.0 } else { 1.4 };
+        let fog = 0.1 * row as f32;
+        let mut blades = Vec::new();
+        for i in (x0 / step).floor() as i64..=(x1 / step).ceil() as i64 {
             let seed = row * 1000 + 60;
-            if hash(i, seed) < 0.25 {
+            let x = (i as f64 + hash(i, seed)) * step;
+            if x < b.x0 + 0.03 || x > b.x1 - 0.03 {
                 continue;
             }
-            let x = (i as f64 + hash(i, seed + 1)) * spacing;
-            if x < b.x0 + 0.05 || x > b.x1 - 0.05 {
-                continue;
+            // Clumps: the grass grows in uneven patches.
+            let clump = 0.5 + 0.3 * (x * 1.3 + row as f64).sin() + 0.2 * (x * 3.7 + 1.0).sin();
+            let len = height * clump.max(0.15) * (0.55 + 0.7 * hash(i, seed + 1));
+            let gust = ((time * 1.7 + x * 0.8).sin() + 0.35 * (time * 3.1 + x * 2.3).sin()) * sway;
+            let mut lean = (hash(i, seed + 2) - 0.5) * 0.9 * len + gust * len;
+            let away = x - view.player.x;
+            if on_top && away.abs() < 0.7 {
+                lean += away.signum() * (1.0 - away.abs() / 0.7) * len * 0.9;
             }
-            let tuft = height * (0.5 + hash(i, seed + 2));
-            let gust = (time * 1.7 + x * 0.8).sin() * sway;
-            for k in 0..4 {
-                let spread = (k as f64 - 1.5) * 0.35 + (hash(i * 4 + k, seed + 3) - 0.5) * 0.3;
-                let len = tuft * (0.6 + 0.5 * hash(i * 4 + k, seed + 4));
-                let mut lean = spread * len * 0.8 + gust * len;
-                let away = base_x_of(x, k) - view.player.x;
-                if on_top && away.abs() < 0.7 {
-                    lean += away.signum() * (1.0 - away.abs() / 0.7) * len * 0.9;
-                }
-                let base = DVec3::new(base_x_of(x, k), b.y1 - 0.02, z);
-                let tip = DVec3::new(base.x + lean, b.y1 + len, z);
-                let mid = DVec3::new(base.x + lean * 0.3, b.y1 + len * 0.6, z);
-                let w = 0.032;
-                let path = &mut blades[(k + i).rem_euclid(2) as usize];
-                path.move_to(cam.point(base - DVec3::X * w));
-                path.quad_to(cam.point(mid), cam.point(tip));
-                path.quad_to(cam.point(mid + DVec3::X * w), cam.point(base + DVec3::X * w));
-                path.close_path();
-            }
+            // Spread in depth, so the rows don't show as lines.
+            let z = (z + (hash(i, seed + 6) - 0.5) * 0.4).clamp(b.z0 + 0.02, b.z1);
+            let base = DVec3::new(x, b.y1 - 0.03, z);
+            let tip_at = DVec3::new(x + lean, b.y1 + len, z);
+            let mid = DVec3::new(x + lean * 0.35, b.y1 + len * 0.55, z);
+            let hue = hash(i, seed + 3);
+            let tint = if hue < 0.3 { mix(tip, dry, 0.5) } else if hue > 0.8 { mix(tip, lush, 0.5) } else { tip };
+            let scale = cam.project(base).scale;
+            blades.push(BladeShape {
+                base: cam.point(base),
+                mid: cam.point(mid),
+                tip: cam.point(tip_at),
+                width: 0.03 * scale * (0.7 + 0.6 * hash(i, seed + 4)),
+                root_color: rgb(darken(root, fog)),
+                tip_color: rgb(darken(tint, fog)),
+                seed: hash(i, seed + 5) as f32,
+            });
         }
+        let Some(patch) = grass.patch(&blades) else { continue };
         let depth = canvas.depth_of(DVec3::new((x0 + x1) / 2.0, b.y1, z));
         // The back rows are sorted with the platform, just in front of it.
         let depth = if row == 0 { depth } else { depth.min(canvas.depth_of(DVec3::new((b.x0 + b.x1) / 2.0, b.y1, (b.z0 + b.z1) / 2.0)) - 0.01) };
-        let fog = 0.12 * row as f32;
-        let colors = colors.map(|c| darken(c, fog));
-        canvas.push(depth, move |scene| {
-            for (path, color) in blades.iter().zip(colors) {
-                scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, path);
-            }
-        });
+        canvas.push(depth, move |scene| patch.draw(scene));
     }
 }
 

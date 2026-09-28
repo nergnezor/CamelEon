@@ -20,6 +20,7 @@ use vello::peniko::{Color, ImageData};
 use vello::wgpu;
 use vello::{AaConfig, Renderer, RendererOptions, Scene};
 
+use crate::grass::{GrassFrame, GrassRenderer};
 use crate::hair::{HairFrame, HairMode, HairRenderer, HairStyle};
 use crate::level::Theme;
 
@@ -32,6 +33,8 @@ pub struct Layers {
     pub mid: Scene,
     /// Everything in focus, full resolution.
     pub front: Scene,
+    /// Grass blades for the grass pass; its patches are drawn in `front`.
+    pub grass: GrassFrame,
 }
 
 impl Layers {
@@ -39,6 +42,7 @@ impl Layers {
         self.far.reset();
         self.mid.reset();
         self.front.reset();
+        self.grass.reset();
     }
 }
 
@@ -382,6 +386,7 @@ pub struct FrameRenderer {
     pub renderer: Renderer,
     hair: HairRenderer,
     pub hair_mode: HairMode,
+    grass: GrassRenderer,
     layers: Layers,
     targets: Option<Targets>,
     layout: wgpu::BindGroupLayout,
@@ -406,6 +411,7 @@ impl FrameRenderer {
             },
         )?;
         let hair = HairRenderer::new(device, &mut renderer);
+        let grass = GrassRenderer::new(device, &mut renderer);
 
         let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -500,6 +506,7 @@ impl FrameRenderer {
             renderer,
             hair,
             hair_mode: HairMode::Both,
+            grass,
             layers: Layers::default(),
             targets: None,
             layout,
@@ -580,6 +587,7 @@ impl FrameRenderer {
         draw: impl FnOnce(&mut Layers, HairStyle) -> FrameInfo,
     ) -> Result<&wgpu::TextureView, vello::Error> {
         self.layers.reset();
+        self.layers.grass.image = Some(self.grass.image.clone());
         let hair_image = self.hair_image();
         let locks = self.hair_locks();
         let info = draw(&mut self.layers, HairStyle { image: hair_image.as_ref(), locks });
@@ -588,6 +596,9 @@ impl FrameRenderer {
             // Vello caches images in its atlas; without this it keeps
             // showing the first frame's strands.
             self.renderer.mark_override_image_dirty(&self.hair.image);
+        }
+        if self.grass.render(device, queue, &self.layers.grass) {
+            self.renderer.mark_override_image_dirty(&self.grass.image);
         }
         self.targets(device, width, height);
         let t = self.targets.as_ref().expect("targets exist");

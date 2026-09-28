@@ -568,6 +568,9 @@ impl Game {
         crate::paint::set_view(w, h, h / view_height / 85.0);
 
         let scene = &mut layers.front;
+        let grass = &mut layers.grass;
+        grass.light = Vec2::new(0.55, -0.83);
+        grass.backlight = (0.9 * (1.0 - 0.7 * rain)) as f32;
         if skip & SKIP_WORLD == 0 {
             // Mist in the jungle's pits; dusky haze deep between the buildings.
             let tint = if dusk { Color::from_rgb8(0x8e, 0x4a, 0x70) } else { Color::from_rgb8(0x6e, 0x86, 0x94) };
@@ -588,7 +591,7 @@ impl Game {
             if dusk {
                 dusk::draw_world(&mut canvas, &self.level, &view);
             } else {
-                jungle::draw_world(&mut canvas, &self.level, &view);
+                jungle::draw_world(&mut canvas, &self.level, &view, grass);
                 weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
                 weather::draw_fireflies(&mut canvas, w, self.time, rain);
                 weather::draw_rain(&mut canvas, &self.level, w, h, self.time, rain, wind);
