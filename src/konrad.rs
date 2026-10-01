@@ -68,6 +68,13 @@ const CAMO_EDGE: Color = Color::from_rgb8(0xc8, 0xf4, 0xe0);
 const CAMO_COVER: f32 = 0.85;
 const FEATURE: Color = Color::from_rgb8(0x2a, 0x1c, 0x18);
 
+/// The arm cannon on his right forearm: blue armour, a lighter plate, a
+/// dark muzzle ring and the plasma glowing inside.
+const CANNON: Color = Color::from_rgb8(0x2a, 0x62, 0xd8);
+const CANNON_LIGHT: Color = Color::from_rgb8(0x74, 0xb4, 0xff);
+const CANNON_DARK: Color = Color::from_rgb8(0x14, 0x2a, 0x6e);
+pub const PLASMA: Color = Color::from_rgb8(0x6a, 0xe4, 0xff);
+
 /// Height of the soles below the ankle bone.
 const SOLE_HEIGHT: f64 = 0.035;
 
@@ -116,6 +123,8 @@ pub struct Motion {
     pub crouch: f64,
     /// Breathing in, 0 (out) to 1 (in), a bit more when winded.
     pub breath: f64,
+    /// Whether he's holding his arm cannon up to shoot.
+    pub aim: bool,
 }
 
 /// Blends between animation clips.
@@ -124,6 +133,8 @@ pub struct Animator {
     run: f64,
     air: f64,
     crouch: f64,
+    /// How far the cannon arm is raised, 0..1.
+    aim: f64,
 }
 
 impl Animator {
@@ -139,6 +150,12 @@ impl Animator {
         // Quick into the crouch and quicker out of it on the leap.
         let rate = if m.crouch > self.crouch { 25.0 } else { 40.0 };
         self.crouch += (m.crouch - self.crouch) * (1.0 - (-dt * rate).exp());
+        // Snaps up to shoot, lowers slowly.
+        if m.aim {
+            self.aim = 1.0;
+        } else {
+            self.aim = (self.aim - dt * 3.0).max(0.0);
+        }
     }
 
     pub fn pose(&self, m: &Motion) -> Pose {
@@ -146,6 +163,14 @@ impl Animator {
         pose.blend(&run(m), self.run);
         pose.blend(&air(m), self.air);
         pose.blend(&crouch(), self.crouch);
+        if self.aim > 0.0 {
+            // The right arm held straight out ahead, cannon first.
+            let mut aimed = pose.clone();
+            aimed.rot[SHOULDER_R] = rx(-1.5) * rz(0.08);
+            aimed.rot[ELBOW_R] = rx(-0.08);
+            aimed.rot[HAND_R] = DQuat::IDENTITY;
+            pose.blend(&aimed, self.aim.min(1.0) * (1.0 - 0.5 * self.crouch));
+        }
         pose
     }
 }
@@ -312,6 +337,10 @@ pub struct Look {
     /// edges.
     pub sun_dir: Vec2,
     pub rim: Color,
+    /// The arm cannon charging up, 0..1, and the flash of a shot just
+    /// fired, 1 fading to 0.
+    pub charge: f64,
+    pub flash: f64,
 }
 
 /// Colour for the limbs on the far side: a touch darker and cooler.
@@ -621,7 +650,22 @@ pub fn draw(canvas: &mut Canvas3d, s: &Solved, look: &Look, hair: HairStyle) -> 
         let across = Vec2::new(-along.y, along.x) * facing;
         let mut parts = vec![Part::Velour(sleeve, shade(VELOUR)), Part::Fill(cuff, shade(RIB))];
         parts.extend(stripes(side, shade(VELOUR), shade(STRIPE)));
-        parts.push(Part::Fill(smooth_closed(&placed(&HAND_SHAPE, pt(wr), along, across, px)), shade(SKIN)));
+        if hand != HAND_R {
+            parts.push(Part::Fill(smooth_closed(&placed(&HAND_SHAPE, pt(wr), along, across, px)), shade(SKIN)));
+            return parts;
+        }
+        // The arm cannon: a chunky armoured tube over the forearm, in place
+        // of the hand, widening to a ringed muzzle.
+        let muzzle = s.at(hand, DVec3::new(0.0, -0.13, 0.0));
+        let back = el.lerp(wr, 0.25);
+        let body = limb(&[pt(back), pt(el.lerp(wr, 0.7)), pt(wr), pt(muzzle)], &[0.1, 0.125, 0.13, 0.12].map(|w| w * px));
+        parts.push(Part::Fill(body, shade(CANNON)));
+        let plate = limb(&[pt(el.lerp(wr, 0.4)), pt(wr.lerp(muzzle, 0.3))], &[0.055, 0.05].map(|w| w * px));
+        parts.push(Part::Fill(plate, shade(CANNON_LIGHT)));
+        parts.push(Part::Fill(band(pt(wr.lerp(muzzle, 0.62)), pt(muzzle), 0.135 * px), shade(CANNON_DARK)));
+        let bore = Ellipse::new(pt(muzzle), (0.075 * px, 0.075 * px), 0.0).to_path(0.1);
+        let hot = (0.25 + 0.75 * look.charge.max(look.flash)).min(1.0) as f32;
+        parts.push(Part::Fill(bore, crate::canvas3d::mix(CANNON_DARK, PLASMA, hot as f64)));
         parts
     };
     let near_shade: fn(Color) -> Color = |c| c;

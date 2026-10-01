@@ -2,8 +2,10 @@
 
 Guidance for coding agents working on **Camel Eon**, a 2.5D jungle platformer
 in Rust. The hero, Konrad (Flashback-inspired, purple velour tracksuit, big
-blue shader-rendered hair), runs and jumps over the rooftops of a future
-city at dusk (the first level) and through the jungle (the second).
+blue shader-rendered hair, a Mega Man-style arm cannon firing blue plasma),
+runs at speed over the rolling hills and loops of an alien wilderness (the
+first level), jumps over the rooftops of a future city at dusk (the second)
+and through the jungle (the third).
 Graphics are GPU vector graphics (Vello on wgpu), not sprites. It runs in a
 window on desktop, on the web (WebGPU), on Android (native, Vulkan) and in
 the kitty terminal.
@@ -55,8 +57,8 @@ is the first thing to rule out.
 `--snapshot OUT.ppm 'SCRIPT'` runs the game headless with scripted input and
 saves the last frame (convert with e.g. `magick out.ppm out.png`).
 
-- Script steps: `KEYS:seconds`, where KEYS is any of `L R J` (left, right,
-  jump) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
+- Script steps: `KEYS:seconds`, where KEYS is any of `L R J F` (left, right,
+  jump, fire) or `-`/empty for none, e.g. `-:1 R:1.2 RJ:0.3`.
   Keys are held for the step and released at the next one (jump fires on
   release, or by itself once fully charged after 0.2 s).
 - `@N` warps to checkpoint N first, e.g. `@4 R:0.7` (open ground, high speed).
@@ -64,7 +66,8 @@ saves the last frame (convert with e.g. `magick out.ppm out.png`).
   `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
   `CAMEL_EON_GPU_BENCH=1` (times the GPU frame and variants with parts skipped),
   `CAMEL_EON_WAV=out.wav` (renders the script's sound and prints its peak/RMS),
-  `CAMEL_EON_LEVEL=N` (0 = the dusk city, the default; 1 = the jungle).
+  `CAMEL_EON_LEVEL=N` (0 = the wilds, the default; 1 = the dusk city;
+  2 = the jungle).
 - It prints the scene build time, the paths/segments/clip layers per layer
   (what Vello has to work through), and a status line per step (position,
   velocity, state), which is handy for checking movement numerically.
@@ -84,12 +87,13 @@ declared there too.
 | File | Role |
 |---|---|
 | `game.rs` | Game state and update loop: player, camera (look-ahead and zoom with speed), hair spring, breathing, effects; `draw` fills the layers |
-| `player.rs` | Movement: running with momentum boost, charged jump, coyote time, catching flies |
-| `level.rs` | Levels (`level::all()`, in order) and their theme: blocks, trees or props, jellies, banners, flies, checkpoints |
+| `player.rs` | Movement: running with momentum boost, charged jump, coyote time, catching flies; running along hills and round loops |
+| `level.rs` | Levels (`level::all()`, in order) and their theme: blocks, hills, loops, trees or props, jellies, banners, flies, checkpoints |
 | `konrad.rs` | The hero: skeleton, animation clips (idle, run, air, crouch), drawing in a fixed layer order, hair strands and beard |
 | `rig.rs` | Bones, poses (slerp blending) and forward kinematics |
 | `canvas3d.rs` | Perspective camera and painter's-sorted 3D drawing onto a Vello scene |
 | `jungle.rs` | The jungle: parallax background, platforms with grass, trees, near foreground, energy cells, global wind |
+| `wilds.rs` | The wilds (Scavengers Reign-like): pastel sky with a ringed planet, spires, sky jellies, wrecks; hills in strata with moss, alien flora, pearl-shell loops, spores, bud checkpoints, the gate |
 | `dusk.rs` | The dusk city: mesas, skylines, airship, maglev, traffic, industry; buildings, containers, catwalks, props; long shadows projected along the sunlight |
 | `noise.rs` | Deterministic 1D/2D gradient noise, fbm and ridged noise for irregular shapes |
 | `soft.rs` | Soft bodies: jellies (shape matching + pressure; Konrad bounces off them) and cloth banners (verlet grid, shaded per cell by its normal) |
@@ -156,6 +160,15 @@ declared there too.
   point also moves its velocity, so anything that pushes cloth must shift
   `prev` along too, or the cloth gets flung. Jellies stand at z = 0.15, just
   behind Konrad, so he passes in front of them (they only jiggle).
-- Keys: N skips to the next level (window and terminal).
+- Keys: N skips to the next level (window and terminal). Fire is X, J or
+  Ctrl (terminal: x or j; gamepad: X/Square or R2; touch: the small button
+  left of jump). A press shoots at once; holding charges a big shot, fired
+  on release.
+- Hills (`level::Hill`) are smooth curves, not boxes: on one Konrad runs
+  along the slope, and only leaves it over a crest sharper than
+  `GROUND_GRIP` allows at his speed. Loops (`level::Loop`) are entered by
+  crossing their bottom on the ground; he falls off when
+  speed² < g·r·sin(angle). He's drawn tilted (`Player::tilt`), so anything
+  placed relative to his body should use `Player::up`.
 - Web: Vello needs compute shaders, so the web build needs WebGPU; wasm is
   single-threaded, and there's no hot reload.

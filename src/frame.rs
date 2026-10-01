@@ -88,7 +88,7 @@ struct Uniforms {
     rain: f32,
     rays: f32,
     grade: f32,
-    // 0 = jungle, 1 = dusk city.
+    // 0 = jungle, 1 = dusk city, 2 = the wilds.
     theme: f32,
     time: f32,
     pan: f32,
@@ -114,6 +114,14 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VertexOut {
     out.position = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
     out.uv = uv;
     return out;
+}
+
+fn is_dusk() -> bool {
+    return abs(u.theme - 1.0) < 0.5;
+}
+
+fn is_wilds() -> bool {
+    return u.theme > 1.5;
 }
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -248,7 +256,7 @@ fn shaft_source(uv: vec2<f32>) -> f32 {
     // In the dusk city the far layer only holds the skyline: the sky is
     // the shader's, behind it.
     var sky = luma(far.rgb);
-    if u.theme > 0.5 {
+    if is_dusk() {
         let behind = luma(textureSampleLevel(sky_tex, smp, uv, 0.0).rgb);
         sky = sky * far.a + behind * (1.0 - far.a);
     }
@@ -273,11 +281,15 @@ fn fs_light(in: VertexOut) -> @location(0) vec4<f32> {
     shafts *= smoothstep(0.0, 0.35, in.uv.y - u.sun.y + 0.1);
     // At dusk the rays hang in the air above the roofs; the buildings
     // themselves stand in their own shade.
-    if u.theme > 0.5 {
+    if is_dusk() {
         shafts *= 1.0 - 0.85 * textureSampleLevel(front_tex, smp, in.uv, 0.0).a;
     }
     // A low evening sun throws long, strong, orange rays.
-    let warm = select(vec3<f32>(1.0, 0.86, 0.62), vec3<f32>(1.0, 0.6, 0.4) * 1.6, u.theme > 0.5);
+    var warm = select(vec3<f32>(1.0, 0.86, 0.62), vec3<f32>(1.0, 0.6, 0.4) * 1.6, is_dusk());
+    if is_wilds() {
+        // Pale, slightly minty light through the alien haze.
+        warm = vec3<f32>(1.0, 0.94, 0.8) * 0.8;
+    }
 
     // Bloom from the foreground's brightest pixels.
     var bloom = vec3<f32>(0.0);
@@ -319,7 +331,7 @@ fn fs_composite(in: VertexOut) -> @location(0) vec4<f32> {
     let far = blurred(far_tex, uv, 2.6);
     let mid = blurred(mid_tex, uv, 1.1);
     var back = far.rgb;
-    if u.theme > 0.5 {
+    if is_dusk() {
         back += textureSampleLevel(sky_tex, smp, uv, 0.0).rgb * (1.0 - far.a);
     }
     var col = back * (1.0 - mid.a) + mid.rgb;
@@ -327,7 +339,18 @@ fn fs_composite(in: VertexOut) -> @location(0) vec4<f32> {
     col = front.rgb * front.a + col * (1.0 - front.a);
     col += textureSampleLevel(light_tex, smp, uv, 0.0).rgb;
 
-    if u.grade > 0.5 && u.theme > 0.5 {
+    if u.grade > 0.5 && is_wilds() {
+        // A hazy alien morning: peach near the sun, cooler and deeper away
+        // from it, teal in the corners.
+        let s = sun_distance(uv);
+        let warmth = exp(-s * 1.6);
+        col *= mix(vec3<f32>(0.76, 0.82, 0.88), vec3<f32>(0.95, 0.9, 0.84), warmth);
+        let p = (uv - 0.5) * vec2<f32>(u.aspect, 1.0) / max(u.aspect, 1.0);
+        let v = smoothstep(0.4, 0.8, length(p));
+        col *= mix(vec3<f32>(1.0), vec3<f32>(0.5, 0.64, 0.7), v);
+        let glow = vec3<f32>(1.0, 0.86, 0.7) * (0.2 * exp(-s * s * 10.0) + 0.04 * exp(-s * 2.0));
+        col = 1.0 - (1.0 - col) * (1.0 - glow);
+    } else if u.grade > 0.5 && is_dusk() {
         // Evening: warm near the sun, rose and lilac away from it, a
         // rose-tinted vignette and a burning glow round the low sun.
         let s = sun_distance(uv);
@@ -620,7 +643,11 @@ impl FrameRenderer {
             p.rain,
             p.rays,
             if p.grade { 1.0 } else { 0.0 },
-            if p.theme == Theme::Dusk { 1.0 } else { 0.0 },
+            match p.theme {
+                Theme::Jungle => 0.0,
+                Theme::Dusk => 1.0,
+                Theme::Wilds => 2.0,
+            },
             p.time,
             p.pan,
             0.0,

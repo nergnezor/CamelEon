@@ -25,6 +25,7 @@ mod soft;
 mod stats;
 mod touch;
 mod weather;
+mod wilds;
 mod window;
 
 #[unsafe(no_mangle)]

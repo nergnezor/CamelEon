@@ -1,6 +1,6 @@
 //! Game state and the frame loop shared by the window and terminal frontends.
 
-use glam::{DMat3, DVec2, DVec3};
+use glam::{DMat3, DQuat, DVec2, DVec3};
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill, Gradient};
 use vello::Scene;
@@ -10,6 +10,7 @@ use crate::konrad::{self as hero, Animator, Look, Motion};
 use crate::canvas3d::{Camera, Canvas3d, OUTLINE};
 use crate::jungle::{self, WorldView};
 use crate::dusk;
+use crate::wilds;
 use crate::level::{self, Level, Theme};
 use crate::player::{Controls, Player};
 use crate::frame::{FrameInfo, Layers, Post};
@@ -44,6 +45,14 @@ const CAMO_BARK: (Color, Color) = (Color::from_rgb8(0x4a, 0x36, 0x2a), Color::fr
 const CAMO_DELAY: f64 = 0.8;
 const CAMO_ON: f64 = 1.4;
 const CAMO_OFF: f64 = 0.3;
+/// Plasma shots: speed, how long they fly, and how long fire must be held
+/// for a charged shot (and until it's fully charged).
+const SHOT_SPEED: f64 = 36.0;
+const SHOT_LIFE: f64 = 1.0;
+const CHARGE_START: f64 = 0.3;
+const CHARGE_FULL: f64 = 1.0;
+/// At most this many small shots in the air at once.
+const MAX_SHOTS: usize = 3;
 
 /// Which controls are currently held down, plus analog stick axes.
 #[derive(Default, Clone, Copy)]
@@ -51,6 +60,8 @@ pub struct Input {
     pub left: bool,
     pub right: bool,
     pub jump: bool,
+    /// Fires the arm cannon; hold to charge.
+    pub fire: bool,
     /// Analog stick, −1..1 (right is positive); zero when no stick is used.
     pub stick_x: f64,
 }
@@ -64,6 +75,7 @@ impl Input {
             left: a.left || b.left,
             right: a.right || b.right,
             jump: a.jump || b.jump,
+            fire: a.fire || b.fire,
             stick_x: pick(a.stick_x, b.stick_x),
         }
     }
@@ -83,6 +95,15 @@ struct Particle {
     size: f64,
     /// A puff of dust: floats instead of falling, grows and fades.
     puff: bool,
+}
+
+/// A plasma shot from the arm cannon.
+struct Shot {
+    pos: DVec2,
+    vel: DVec2,
+    life: f64,
+    /// A charged shot: big, and it flies through things.
+    charged: bool,
 }
 
 pub struct Game {
@@ -134,6 +155,14 @@ pub struct Game {
     footfall: i64,
     /// Camouflage, 0..1 (see `konrad::Look::camo`).
     camo: f64,
+    shots: Vec<Shot>,
+    prev_fire: bool,
+    /// Seconds fire has been held, while it's held.
+    fire_held: Option<f64>,
+    /// Seconds since the last shot, for the cannon's pose and flash.
+    since_shot: f64,
+    /// Konrad's drawn lean, following the ground (see `Player::tilt`).
+    tilt: f64,
 }
 
 impl Game {
@@ -149,6 +178,7 @@ impl Game {
         let colors = match level.theme {
             Theme::Jungle => [Color::from_rgb8(0x6e, 0xd0, 0x52), Color::from_rgb8(0x3a, 0xc8, 0xb0)],
             Theme::Dusk => [Color::from_rgb8(0xff, 0x52, 0xb0), Color::from_rgb8(0x4a, 0xd8, 0xf0)],
+            Theme::Wilds => [Color::from_rgb8(0xff, 0x8a, 0x9a), Color::from_rgb8(0x9a, 0xe8, 0xd0)],
         };
         let jellies = level.jellies.iter().enumerate().map(|(i, &at)| Jelly::new(at, colors[i % 2], i as u64 + 7)).collect();
         let banners = level.banners.iter().enumerate().map(|(i, spec)| Banner::new(spec, i as u64 + 3)).collect();
@@ -190,6 +220,11 @@ impl Game {
             sounds: Vec::new(),
             footfall: 0,
             camo: 0.0,
+            shots: Vec::new(),
+            prev_fire: false,
+            fire_held: None,
+            since_shot: 10.0,
+            tilt: 0.0,
         }
     }
 
@@ -234,6 +269,8 @@ impl Game {
             };
         }
 
+        let fire = (k.fire || p.fire) && self.won_at.is_none();
+        self.update_cannon(dt, fire);
         let events = self.player.update(dt, &controls, &self.level, &self.flies, &self.caught);
         self.step_sounds();
         self.update_soft(dt, jump);
@@ -253,6 +290,7 @@ impl Game {
                 let (dust, bits) = match self.level.theme {
                     Theme::Jungle => (Color::from_rgb8(0x9a, 0x7a, 0x50), Color::from_rgb8(0x6a, 0x9a, 0x4a)),
                     Theme::Dusk => (Color::from_rgb8(0xae, 0x80, 0x78), Color::from_rgb8(0x5a, 0x44, 0x60)),
+                    Theme::Wilds => (Color::from_rgb8(0xe8, 0xc8, 0xb0), Color::from_rgb8(0x8a, 0xd8, 0xb8)),
                 };
                 self.burst(feet, dust, (speed as usize / 3).min(10));
                 self.burst(feet, bits, (speed as usize / 4).min(6));
@@ -294,6 +332,12 @@ impl Game {
         // Turning: facing changes swing Joe round through the camera.
         let k = 1.0 - (-dt * 10.0).exp();
         self.turn += (self.player.facing - self.turn) * k;
+        // Lean with the ground; all the way round in a loop, at once.
+        if self.player.in_loop() {
+            self.tilt = self.player.tilt;
+        } else {
+            self.tilt += (self.player.tilt - self.tilt) * (1.0 - (-dt * 14.0).exp());
+        }
 
         let motion = self.motion();
         self.animator.update(dt, &motion);
@@ -304,8 +348,8 @@ impl Game {
         // One breath about every four seconds at rest, panting when winded.
         self.breath_phase += dt * (1.5 + 3.5 * self.exertion);
         self.weather.update(dt, self.time);
-        if self.level.theme == Theme::Dusk {
-            // A clear evening in the city.
+        if self.level.theme != Theme::Jungle {
+            // A clear evening in the city, a clear day in the wilds.
             self.weather.rain = 0.0;
         }
         self.update_camo(dt);
@@ -330,6 +374,72 @@ impl Game {
         self.camera.y = self.camera.y.max(self.level.kill_y + 6.0);
 
         self.update_effects(dt);
+    }
+
+    /// The arm cannon: a press fires a shot at once; holding fire charges it
+    /// up, and letting go of a full charge fires a big one.
+    fn update_cannon(&mut self, dt: f64, fire: bool) {
+        self.since_shot += dt;
+        if fire && !self.prev_fire {
+            self.fire_held = Some(0.0);
+            if self.shots.iter().filter(|s| !s.charged).count() < MAX_SHOTS {
+                self.shoot(false);
+            }
+        } else if fire {
+            self.fire_held = self.fire_held.map(|t| t + dt);
+        } else if let Some(held) = self.fire_held.take() {
+            if held >= CHARGE_FULL {
+                self.shoot(true);
+            }
+        }
+        self.prev_fire = fire;
+
+        for shot in &mut self.shots {
+            shot.pos += shot.vel * dt;
+            shot.life -= dt;
+        }
+        // Shots burst on the ground and against walls, and knock jellies.
+        let mut bursts = Vec::new();
+        for shot in &mut self.shots {
+            let p = shot.pos;
+            let solid = self.level.blocks.iter().any(|b| !b.one_way() && p.x > b.x0 && p.x < b.x1 && p.y > b.y0 && p.y < b.y1)
+                || self.level.hills.iter().any(|h| h.contains(p.x) && p.y < h.height(p.x));
+            let mut hit = solid;
+            for jelly in &mut self.jellies {
+                hit |= jelly.poke(p, shot.vel * if shot.charged { 0.35 } else { 0.15 });
+            }
+            if hit && (solid || !shot.charged) {
+                shot.life = 0.0;
+                bursts.push((p, shot.charged));
+            }
+        }
+        for (p, charged) in bursts {
+            self.burst(DVec3::new(p.x, p.y, 0.0), hero::PLASMA, if charged { 24 } else { 8 });
+        }
+        self.shots.retain(|s| s.life > 0.0);
+    }
+
+    /// How charged the cannon is, 0..1.
+    fn charge(&self) -> f64 {
+        self.fire_held.map_or(0.0, |t| ((t - CHARGE_START) / (CHARGE_FULL - CHARGE_START)).clamp(0.0, 1.0))
+    }
+
+    /// Where the cannon's muzzle is, near enough (for shots to start from).
+    fn muzzle(&self) -> (DVec2, DVec2) {
+        let p = &self.player;
+        let up = p.up();
+        let forward = DVec2::new(up.y, -up.x) * p.facing;
+        (p.pos + up * 1.4 + forward * 0.75, forward)
+    }
+
+    fn shoot(&mut self, charged: bool) {
+        let (at, forward) = self.muzzle();
+        // Shots keep his speed, so they still fly ahead of him at a sprint.
+        let carry = self.player.vel.dot(forward).max(0.0);
+        self.shots.push(Shot { pos: at, vel: forward * (SHOT_SPEED + carry), life: SHOT_LIFE, charged });
+        self.since_shot = 0.0;
+        self.sounds.push(Sfx::Shot { charged });
+        self.burst(DVec3::new(at.x, at.y, 0.0), hero::PLASMA, if charged { 10 } else { 3 });
     }
 
     /// Footfalls: a sound, and dust kicked up at speed.
@@ -384,7 +494,9 @@ impl Game {
     /// moving drops the camouflage at once.
     fn update_camo(&mut self, dt: f64) {
         let p = &self.player;
-        let hiding = p.on_ground && p.idle > CAMO_DELAY;
+        // Shooting gives him away.
+        let shooting = self.fire_held.is_some() || self.since_shot < 1.0;
+        let hiding = p.on_ground && p.idle > CAMO_DELAY && !shooting;
         if hiding && self.camo == 0.0 {
             self.sounds.push(Sfx::Camo);
         }
@@ -394,8 +506,10 @@ impl Game {
     /// What the camouflage blends into: bark in front of a tree trunk,
     /// otherwise the leaves.
     fn camo_colors(&self) -> (Color, Color) {
-        if self.level.theme == Theme::Dusk {
-            return dusk::CAMO;
+        match self.level.theme {
+            Theme::Dusk => return dusk::CAMO,
+            Theme::Wilds => return wilds::CAMO,
+            Theme::Jungle => {}
         }
         let p = self.player.pos;
         let trunk = self.level.trees.iter().any(|t| (p.x - t.x).abs() < 1.0 && p.y < t.y);
@@ -511,6 +625,7 @@ impl Game {
             airborne: !p.on_ground,
             crouch: p.crouch(),
             breath: self.breath(),
+            aim: self.since_shot < 0.45 || self.fire_held.is_some(),
         }
     }
 
@@ -552,10 +667,13 @@ impl Game {
         jungle::set_wind(wind);
         let skip = SKIP.load(std::sync::atomic::Ordering::Relaxed);
         let dusk = self.level.theme == Theme::Dusk;
+        let wild = self.level.theme == Theme::Wilds;
         if skip & SKIP_BACKGROUND == 0 {
             crate::paint::set_view(w / 2.0, h / 2.0, h / view_height / 170.0);
             if dusk {
                 dusk::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
+            } else if wild {
+                wilds::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
             } else {
                 jungle::draw_background(&mut layers.far, &mut layers.mid, &half, w / 2.0, h / 2.0, self.time);
                 weather::draw_birds(&mut layers.far, &half, w / 2.0, h / 2.0, self.time, rain);
@@ -569,9 +687,9 @@ impl Game {
 
         let scene = &mut layers.front;
         let grass = &mut layers.grass;
-        grass.light = Vec2::new(0.55, -0.83);
+        grass.light = if wild { wilds::SUN_SCREEN_DIR } else { Vec2::new(0.55, -0.83) };
         grass.backlight = (0.9 * (1.0 - 0.7 * rain)) as f32;
-        if skip & SKIP_WORLD == 0 {
+        if skip & SKIP_WORLD == 0 && !wild {
             // Mist in the jungle's pits; dusky haze deep between the buildings.
             let tint = if dusk { Color::from_rgb8(0x8e, 0x4a, 0x70) } else { Color::from_rgb8(0x6e, 0x86, 0x94) };
             weather::draw_pit_mist(scene, &camera, w, h, rain, tint);
@@ -590,6 +708,8 @@ impl Game {
             };
             if dusk {
                 dusk::draw_world(&mut canvas, &self.level, &view);
+            } else if wild {
+                wilds::draw_world(&mut canvas, &self.level, &view, grass);
             } else {
                 jungle::draw_world(&mut canvas, &self.level, &view, grass);
                 weather::draw_leaves(&mut canvas, w, self.time, wind, (-2.5, 2.0), 90);
@@ -604,6 +724,7 @@ impl Game {
         if skip & SKIP_JOE == 0 {
             hair = self.draw_joe(&mut canvas, hair_style);
         }
+        self.draw_shots(&mut canvas);
         for p in &self.particles {
             let pr = camera.project(p.pos);
             if p.puff {
@@ -640,9 +761,17 @@ impl Game {
         FrameInfo {
             hair,
             post: Post {
-                sun: if dusk { [dusk::SUN.0 as f32, dusk::SUN.1 as f32] } else { [crate::paint::SUN.0 as f32, crate::paint::SUN.1 as f32] },
+                sun: match self.level.theme {
+                    Theme::Dusk => [dusk::SUN.0 as f32, dusk::SUN.1 as f32],
+                    Theme::Wilds => [wilds::SUN.0 as f32, wilds::SUN.1 as f32],
+                    Theme::Jungle => [crate::paint::SUN.0 as f32, crate::paint::SUN.1 as f32],
+                },
                 rain: rain as f32,
-                rays: if dusk { 0.5 } else { 1.0 },
+                rays: match self.level.theme {
+                    Theme::Dusk => 0.5,
+                    Theme::Wilds => 0.5,
+                    Theme::Jungle => 1.0,
+                },
                 grade: skip & SKIP_GRADE == 0,
                 theme: self.level.theme,
                 time: self.time as f32,
@@ -672,6 +801,8 @@ impl Game {
         let dusk = self.level.theme == Theme::Dusk;
         let light = if dusk {
             dusk::light()
+        } else if self.level.theme == Theme::Wilds {
+            wilds::light()
         } else {
             soft::Light { screen: Vec2::new(0.55, -0.83), world: DVec3::new(0.4, 0.8, -0.45), rim: hero::RIM }
         };
@@ -697,18 +828,13 @@ impl Game {
         let motion = self.motion();
         let pose = self.animator.pose(&motion);
         let p = &self.player;
-        let rot = motion.heading;
+        // Leaning with the ground, round the camera's axis.
+        let rot = DQuat::from_rotation_z(self.tilt) * motion.heading;
         let feet = DVec3::new(p.pos.x, p.pos.y, 0.0);
         // A soft violet contact shadow on the ground below, shrinking and
-        // fading as Joe gets higher.
-        let ground = self
-            .level
-            .blocks
-            .iter()
-            .filter(|b| b.x0 <= p.pos.x && p.pos.x <= b.x1 && b.y1 <= p.pos.y + 0.05)
-            .map(|b| b.y1)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let fade = (1.0 - (p.pos.y - ground) / 6.0).clamp(0.0, 1.0);
+        // fading as Joe gets higher (none on a loop's track).
+        let ground = self.level.ground_below(p.pos.x, p.pos.y);
+        let fade = if p.in_loop() { 0.0 } else { (1.0 - (p.pos.y - ground) / 6.0).clamp(0.0, 1.0) };
         if fade > 0.0 {
             let center = DVec3::new(p.pos.x, ground, 0.15);
             let size = 0.6 + 0.4 * fade;
@@ -750,7 +876,8 @@ impl Game {
         // Cartoon speed stretch: the faster Joe goes, the longer and thinner.
         let stretch = ((p.vel.x.abs() - 12.0) / 22.0).clamp(0.0, 1.0) * 0.7;
         let root = hero::root(feet, rot, self.squash, stretch);
-        let standing = p.on_ground;
+        // Planting the feet only makes sense standing upright.
+        let standing = p.on_ground && self.tilt.abs() < 0.6;
         let solved = hero::plant(&self.skeleton, &pose, root, standing);
         let dusk = self.level.theme == Theme::Dusk;
         if dusk {
@@ -768,8 +895,18 @@ impl Game {
             camo: self.camo,
             camo_colors: self.camo_colors(),
             // The dusk sun is low on the right, and rims him in orange.
-            sun_dir: if dusk { dusk::SUN_SCREEN_DIR } else { Vec2::new(0.55, -0.83) },
-            rim: if dusk { Color::from_rgb8(0xff, 0xa4, 0x68) } else { hero::RIM },
+            sun_dir: match self.level.theme {
+                Theme::Dusk => dusk::SUN_SCREEN_DIR,
+                Theme::Wilds => wilds::SUN_SCREEN_DIR,
+                Theme::Jungle => Vec2::new(0.55, -0.83),
+            },
+            rim: match self.level.theme {
+                Theme::Dusk => Color::from_rgb8(0xff, 0xa4, 0x68),
+                Theme::Wilds => wilds::RIM,
+                Theme::Jungle => hero::RIM,
+            },
+            charge: self.charge(),
+            flash: (1.0 - self.since_shot / 0.15).max(0.0),
         };
         // The hero is drawn as one group, sorted as a whole against the world
         // (no outline: the flat, outline-free style of the era).
@@ -777,7 +914,63 @@ impl Game {
         let mut figure = Canvas3d::group(canvas.camera, 0.0);
         let hair = hero::draw(&mut figure, &solved, &look, hair_style);
         canvas.push(hero_depth, figure.into_group());
+        // Plasma gathering at the muzzle while charging, and the flash of a
+        // shot.
+        let glow = look.charge.max(look.flash);
+        if glow > 0.0 {
+            let muzzle = canvas.camera.project(solved.at(hero::bone::HAND_R, DVec3::new(0.0, -0.16, 0.0)));
+            let full = look.charge >= 1.0;
+            let flicker = if full { 0.8 + 0.2 * (self.time * 40.0).sin() } else { 1.0 };
+            let r = muzzle.scale * (0.18 + 0.4 * glow) * flicker;
+            let sparks: Vec<Point> = (0..6)
+                .filter(|_| look.charge > 0.0)
+                .map(|k| {
+                    let a = self.time * 9.0 + k as f64 * 1.05;
+                    let t = (self.time * 2.5 + k as f64 * 0.37).fract();
+                    muzzle.pos + Vec2::new(a.cos(), a.sin()) * r * 1.8 * (1.0 - t)
+                })
+                .collect();
+            let alpha = glow as f32;
+            canvas.push(hero_depth - 0.05, move |scene| {
+                let g = Gradient::new_radial(muzzle.pos, r as f32).with_stops([
+                    (0.0, Color::WHITE.with_alpha(alpha)),
+                    (0.3, hero::PLASMA.with_alpha(0.8 * alpha)),
+                    (1.0, hero::PLASMA.with_alpha(0.0)),
+                ]);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &g, None, &Circle::new(muzzle.pos, r));
+                for p in &sparks {
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgb8(0xd8, 0xf8, 0xff), None, &Circle::new(*p, r * 0.08));
+                }
+            });
+        }
         hair
+    }
+
+    /// The plasma shots in flight: a white-hot core in a blue glow, with a
+    /// fading tail behind.
+    fn draw_shots(&self, canvas: &mut Canvas3d) {
+        for shot in &self.shots {
+            let at = DVec3::new(shot.pos.x, shot.pos.y, 0.0);
+            let pr = canvas.camera.project(at);
+            let size = if shot.charged { 0.42 * (1.0 + 0.12 * (self.time * 30.0).sin()) } else { 0.16 };
+            let r = size * pr.scale;
+            let dir = Vec2::new(shot.vel.x, -shot.vel.y).normalize();
+            let tail = pr.pos - dir * r * 3.5;
+            let fade = (shot.life / 0.15).min(1.0) as f32;
+            canvas.push(pr.depth - 0.1, move |scene| {
+                let id = Affine::IDENTITY;
+                let streak = crate::canvas3d::capsule_path(tail, r * 0.25, pr.pos, r * 0.9);
+                let trail = Gradient::new_linear(tail, pr.pos).with_stops([hero::PLASMA.with_alpha(0.0), hero::PLASMA.with_alpha(0.7 * fade)]);
+                scene.fill(Fill::NonZero, id, &trail, None, &streak);
+                let g = Gradient::new_radial(pr.pos, (r * 2.2) as f32).with_stops([
+                    (0.0, hero::PLASMA.with_alpha(0.7 * fade)),
+                    (1.0, hero::PLASMA.with_alpha(0.0)),
+                ]);
+                scene.fill(Fill::NonZero, id, &g, None, &Circle::new(pr.pos, r * 2.2));
+                scene.fill(Fill::NonZero, id, Color::from_rgb8(0x9a, 0xee, 0xff).with_alpha(fade), None, &Circle::new(pr.pos, r));
+                scene.fill(Fill::NonZero, id, Color::WHITE.with_alpha(fade), None, &Circle::new(pr.pos, r * 0.55));
+            });
+        }
     }
 
     fn draw_hud(&self, scene: &mut Scene, w: f64, h: f64) {

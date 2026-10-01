@@ -28,6 +28,8 @@ pub enum Sfx {
     Camo,
     /// Fell into a pit.
     Fall,
+    /// A plasma shot from the arm cannon; `charged` for the big one.
+    Shot { charged: bool },
     Win,
 }
 
@@ -450,6 +452,18 @@ impl Synth {
             Sfx::Camo => {
                 self.add(Voice { len: 1.4, attack: 0.5, decay: 0.5, noise: 0.07, n0: 1800.0, n1: 6500.0, q: 3.0, glide: 1.2, ..Voice::default() });
                 self.add(Voice { len: 1.4, attack: 0.4, decay: 0.45, tone: 0.035, f0: 660.0, f1: 1320.0, glide: 1.2, vibrato: 0.01, vibrato_rate: 7.0, ..Voice::default() });
+            }
+            Sfx::Shot { charged } => {
+                if charged {
+                    // A deep, fat blast with a fizzing tail.
+                    self.add(Voice { len: 0.45, decay: 0.14, wave: Wave::Triangle, tone: 0.2, f0: 900.0, f1: 110.0, glide: 0.3, vibrato: 0.05, vibrato_rate: 30.0, ..Voice::default() });
+                    self.add(Voice { len: 0.4, decay: 0.12, noise: 0.3, n0: 3500.0, n1: 600.0, q: 1.5, glide: 0.3, ..Voice::default() });
+                } else {
+                    // Pew: a quick falling zap.
+                    let pitch = r.range(0.95, 1.05);
+                    self.add(Voice { len: 0.12, decay: 0.04, wave: Wave::Triangle, tone: 0.14, f0: 1500.0 * pitch, f1: 380.0, glide: 0.08, ..Voice::default() });
+                    self.add(Voice { len: 0.06, decay: 0.02, noise: 0.1, n0: 5000.0, n1: 2500.0, q: 2.0, glide: 0.05, ..Voice::default() });
+                }
             }
             Sfx::Fall => {
                 self.add(Voice { len: 0.9, attack: 0.02, decay: 0.35, wave: Wave::Triangle, tone: 0.16, f0: 520.0, f1: 110.0, glide: 0.7, vibrato: 0.04, vibrato_rate: 9.0, ..Voice::default() });

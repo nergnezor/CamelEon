@@ -1,6 +1,7 @@
 //! On-screen touch controls for phones and tablets: a floating analog stick
 //! on the left half of the screen (it appears where the thumb lands) and
-//! a jump button on the right (anywhere on the right half jumps).
+//! a jump button on the right (anywhere on the right half jumps, except
+//! the fire button next to it).
 
 use vello::kurbo::{Affine, BezPath, Circle, Point, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
@@ -19,6 +20,7 @@ struct Stick {
 pub struct TouchControls {
     stick: Option<Stick>,
     jump: Option<u64>,
+    fire: Option<u64>,
     /// The overlay only shows once the screen has been touched.
     used: bool,
     size: (f64, f64),
@@ -34,6 +36,11 @@ impl TouchControls {
         Point::new(self.size.0 - r * 1.5, self.size.1 - r * 1.6)
     }
 
+    fn fire_button(&self) -> Point {
+        let r = self.radius();
+        self.jump_button() - Vec2::new(r * 2.6, -r * 0.3)
+    }
+
     pub fn resize(&mut self, w: f64, h: f64) {
         self.size = (w, h);
     }
@@ -46,6 +53,8 @@ impl TouchControls {
                     if self.stick.is_none() {
                         self.stick = Some(Stick { id, origin: pos, pos });
                     }
+                } else if (pos - self.fire_button()).hypot() < self.radius() * 1.2 {
+                    self.fire = Some(id);
                 } else {
                     self.jump = Some(id);
                 }
@@ -64,6 +73,9 @@ impl TouchControls {
                 if self.jump == Some(id) {
                     self.jump = None;
                 }
+                if self.fire == Some(id) {
+                    self.fire = None;
+                }
             }
         }
     }
@@ -71,6 +83,7 @@ impl TouchControls {
     pub fn input(&self) -> Input {
         let mut input = Input {
             jump: self.jump.is_some(),
+            fire: self.fire.is_some(),
             ..Input::default()
         };
         if let Some(stick) = &self.stick {
@@ -117,5 +130,10 @@ impl TouchControls {
         arrow.line_to(j + Vec2::new(0.0, -r * 0.3));
         arrow.line_to(j + Vec2::new(r * 0.35, r * 0.15));
         scene.stroke(&Stroke::new(r * 0.12), id, ink.with_alpha(0.75), None, &arrow);
+
+        // Fire: a small ring, like a plasma shot.
+        let f = self.fire_button();
+        ring(scene, f, r * 0.8, self.fire.is_some());
+        scene.fill(Fill::NonZero, id, Color::from_rgb8(0x6a, 0xe4, 0xff).with_alpha(0.8), None, &Circle::new(f, r * 0.22));
     }
 }

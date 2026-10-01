@@ -1,7 +1,7 @@
 //! Gamepad input via gilrs (Linux, Windows, macOS and the web).
 //!
 //! Layout (Xbox names, PlayStation in brackets):
-//! left stick / d-pad: run, A [Cross]: jump.
+//! left stick / d-pad: run, A [Cross]: jump, X [Square] or R2: fire.
 
 use gilrs::{Axis, Button, Gilrs};
 
@@ -44,6 +44,7 @@ impl Gamepads {
             input.left |= pad.is_pressed(Button::DPadLeft);
             input.right |= pad.is_pressed(Button::DPadRight);
             input.jump |= pad.is_pressed(Button::South);
+            input.fire |= pad.is_pressed(Button::West) || pad.is_pressed(Button::RightTrigger2);
         }
         input
     }

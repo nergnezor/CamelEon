@@ -96,6 +96,7 @@ fn run_inner(transfer: Transfer) -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Left | KeyCode::Char('a') => game.input.left = pressed,
                 KeyCode::Right | KeyCode::Char('d') => game.input.right = pressed,
                 KeyCode::Char(' ') | KeyCode::Char('z') | KeyCode::Up | KeyCode::Char('w') => game.input.jump = pressed,
+                KeyCode::Char('x') | KeyCode::Char('j') => game.input.fire = pressed,
                 KeyCode::Char('m') if key.kind == KeyEventKind::Press => audio.toggle_mute(),
                 KeyCode::Char('n') if key.kind == KeyEventKind::Press => game.next_level(),
                 KeyCode::Esc | KeyCode::Char('q') => return Ok(()),

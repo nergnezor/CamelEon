@@ -21,6 +21,7 @@ mod snapshot;
 mod terminal;
 mod touch;
 mod weather;
+mod wilds;
 mod window;
 
 #[cfg(not(target_arch = "wasm32"))]

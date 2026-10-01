@@ -120,6 +120,19 @@ impl Jelly {
         Some(((-vel_y * 0.9).max(14.0) * boost).min(25.0))
     }
 
+    /// A shot hitting it at `at`: the points near it are knocked along
+    /// `push`. Returns whether it was hit.
+    pub fn poke(&mut self, at: DVec2, push: DVec2) -> bool {
+        if self.center().distance(at) > self.rest_height * 0.6 {
+            return false;
+        }
+        for (p, v) in self.pts.iter().zip(&mut self.vel) {
+            let near = (1.0 - p.distance(at) / 1.0).max(0.0);
+            *v += push * near;
+        }
+        true
+    }
+
     pub fn update(&mut self, dt: f64, level: &Level, time: f64, player: (DVec2, DVec2)) {
         let c = self.center();
         // Shape matching: the rotation that best fits the rest shape to
@@ -187,13 +200,25 @@ impl Jelly {
     }
 }
 
-/// Whether `p` is resting on (or just in) the top of a block.
+/// Whether `p` is resting on (or just in) the top of a block or a hill.
 fn on_block(level: &Level, p: DVec2) -> bool {
     level.blocks.iter().any(|b| p.x >= b.x0 && p.x <= b.x1 && p.y <= b.y1 + 0.03 && p.y > b.y1 - 0.3)
+        || level.hills.iter().any(|h| h.contains(p.x) && (p.y - h.height(p.x)).abs() < 0.03 + 0.15)
 }
 
-/// Pushes a point out of the level's blocks, with some friction.
+/// Pushes a point out of the level's blocks and hills, with some friction.
 fn collide(level: &Level, p: &mut DVec2, v: &mut DVec2) {
+    for h in &level.hills {
+        if !h.contains(p.x) {
+            continue;
+        }
+        let top = h.height(p.x);
+        if p.y < top && p.y > top - 1.5 {
+            p.y = top;
+            v.y = v.y.max(0.0);
+            v.x *= 0.85;
+        }
+    }
     for b in &level.blocks {
         if p.x <= b.x0 || p.x >= b.x1 || p.y <= b.y0 || p.y >= b.y1 {
             continue;

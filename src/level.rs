@@ -37,6 +37,9 @@ pub enum Theme {
     Jungle,
     /// A future city at dusk: concrete, steel and a low sun.
     Dusk,
+    /// An alien wilderness in soft pastels: rolling hills to run fast over,
+    /// loops grown from pearly shell, and strange flora.
+    Wilds,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -73,8 +76,68 @@ pub struct BannerSpec {
     pub colors: [Color; 2],
 }
 
+/// Rolling ground: a smooth curve through `pts` (x increasing), solid below
+/// it, ending in cliffs at both ends.
+pub struct Hill {
+    pub pts: Vec<DVec2>,
+}
+
+impl Hill {
+    pub fn x0(&self) -> f64 {
+        self.pts[0].x
+    }
+
+    pub fn x1(&self) -> f64 {
+        self.pts[self.pts.len() - 1].x
+    }
+
+    pub fn contains(&self, x: f64) -> bool {
+        x >= self.x0() && x <= self.x1()
+    }
+
+    /// The height of the ground at `x` (clamped to the ends): a cubic
+    /// Hermite curve with Catmull-Rom tangents, so it's smooth in slope.
+    pub fn height(&self, x: f64) -> f64 {
+        let pts = &self.pts;
+        let n = pts.len();
+        let x = x.clamp(self.x0(), self.x1());
+        let i = pts.partition_point(|p| p.x <= x).clamp(1, n - 1) - 1;
+        let (a, b) = (pts[i], pts[i + 1]);
+        let tangent = |k: usize| {
+            let (l, r) = (pts[k.saturating_sub(1)], pts[(k + 1).min(n - 1)]);
+            (r.y - l.y) / (r.x - l.x)
+        };
+        let w = b.x - a.x;
+        let t = (x - a.x) / w;
+        let (t2, t3) = (t * t, t * t * t);
+        (2.0 * t3 - 3.0 * t2 + 1.0) * a.y + (t3 - 2.0 * t2 + t) * w * tangent(i) + (-2.0 * t3 + 3.0 * t2) * b.y + (t3 - t2) * w * tangent(i + 1)
+    }
+
+    /// dy/dx of the ground.
+    pub fn slope(&self, x: f64) -> f64 {
+        let e = 0.02;
+        (self.height(x + e) - self.height(x - e)) / (2.0 * e)
+    }
+
+    /// d²y/dx²: negative over crests, positive in hollows.
+    pub fn bend(&self, x: f64) -> f64 {
+        let e = 0.1;
+        (self.height(x + e) - 2.0 * self.height(x) + self.height(x - e)) / (e * e)
+    }
+}
+
+/// A loop to run round: its bottom rests on the ground at `center.x`.
+#[derive(Clone, Copy)]
+pub struct Loop {
+    pub center: DVec2,
+    pub radius: f64,
+}
+
 pub struct Level {
     pub theme: Theme,
+    /// Rolling ground (see `Hill`), besides the blocks.
+    pub hills: Vec<Hill>,
+    pub loops: Vec<Loop>,
     /// Where jellies live (see `soft`), standing on the ground.
     pub jellies: Vec<DVec2>,
     pub banners: Vec<BannerSpec>,
@@ -108,6 +171,8 @@ pub fn jungle() -> Level {
     let p = DVec2::new;
     Level {
         theme: Theme::Jungle,
+        hills: Vec::new(),
+        loops: Vec::new(),
         props: Vec::new(),
         // Jellies to bounce on: one to find at the start, others for the
         // flies up high.
@@ -221,6 +286,8 @@ pub fn dusk() -> Level {
     use PropKind::*;
     Level {
         theme: Theme::Dusk,
+        hills: Vec::new(),
+        loops: Vec::new(),
         jellies: vec![p(12.5, 0.0), p(57.5, -0.8), p(100.0, 0.0), p(141.0, 0.0), p(200.0, 0.0), p(275.0, 0.0)],
         banners: {
             let banner = |x0: f64, x1: f64, catwalk_top: f64, length: f64, colors: [Color; 2]| BannerSpec {
@@ -349,7 +416,118 @@ pub fn dusk() -> Level {
     }
 }
 
+impl Level {
+    /// The hill under `x` whose surface is at or below `y` (with a little
+    /// leeway), and its height there.
+    pub fn hill_below(&self, x: f64, y: f64) -> Option<(usize, f64)> {
+        self.hills
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.contains(x))
+            .map(|(i, h)| (i, h.height(x)))
+            .filter(|&(_, top)| top <= y + 0.05)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The highest ground (block top or hill) under `x` at or below `y`.
+    pub fn ground_below(&self, x: f64, y: f64) -> f64 {
+        let blocks = self.blocks.iter().filter(|b| b.x0 <= x && x <= b.x1 && b.y1 <= y + 0.05).map(|b| b.y1);
+        let hills = self.hill_below(x, y).map(|(_, top)| top);
+        blocks.chain(hills).fold(f64::NEG_INFINITY, f64::max)
+    }
+}
+
+/// A fungal shelf growing out over the hills; can be jumped through.
+fn shelf(x0: f64, x1: f64, top: f64) -> Block {
+    Block { x0, x1, y0: top - 0.45, y1: top, z0: -0.6, z1: 1.2, kind: BlockKind::Log }
+}
+
+/// The wilds: an alien valley of rolling hills, built for speed. Long
+/// downhills feed three loops; crests and kickers throw Konrad into the air
+/// over the pits at full tilt.
+pub fn wilds() -> Level {
+    let p = DVec2::new;
+    let hills = vec![
+        Hill {
+            pts: vec![
+                p(-8.0, 0.0), p(8.0, 0.0), p(16.0, 0.3), p(24.0, -1.2), p(32.0, -3.0), p(40.0, -2.4), p(48.0, 0.2),
+                p(56.0, 1.8), p(63.0, 1.0), p(71.0, -3.2), p(79.0, -6.4), p(85.0, -7.0), p(95.0, -7.0),
+                p(103.0, -5.6), p(111.0, -2.8), p(118.0, -0.2),
+            ],
+        },
+        Hill {
+            pts: vec![
+                p(131.0, -3.0), p(139.0, -3.8), p(147.0, -2.2), p(156.0, 1.2), p(164.0, 2.0), p(172.0, 0.8),
+                p(182.0, -3.5), p(192.0, -8.2), p(200.0, -9.0), p(213.0, -9.0), p(222.0, -7.0), p(231.0, -3.0),
+                p(239.0, 0.6), p(246.0, 3.2),
+            ],
+        },
+        Hill {
+            pts: vec![
+                p(265.0, -0.5), p(274.0, -1.6), p(283.0, -1.0), p(292.0, -2.4), p(301.0, -6.0), p(310.0, -8.4),
+                p(319.0, -9.0), p(332.0, -9.0), p(342.0, -6.2), p(352.0, -3.0), p(362.0, -1.0), p(372.0, 0.0),
+                p(400.0, 0.0),
+            ],
+        },
+    ];
+    let on = |x: f64| p(x, hills.iter().find(|h| h.contains(x)).map_or(0.0, |h| h.height(x)));
+    let loops: Vec<Loop> = [(90.0, 3.2), (206.5, 3.6), (325.5, 3.6)]
+        .into_iter()
+        .map(|(x, radius)| Loop { center: on(x) + p(0.0, radius), radius })
+        .collect();
+    // Spores to catch: along the ground, over the crests where he flies,
+    // round the insides of the loops and over the pits.
+    let mut flies = vec![
+        on(5.0) + p(0.0, 1.8),
+        on(20.0) + p(0.0, 1.9),
+        on(36.0) + p(0.0, 1.8),
+        on(56.0) + p(0.0, 3.2),
+        on(60.0) + p(0.0, 3.6),
+        p(63.0, 7.2),
+        on(76.0) + p(0.0, 1.6),
+        on(108.0) + p(0.0, 1.8),
+        p(122.0, 3.0),
+        p(126.0, 2.4),
+        on(150.0) + p(0.0, 1.8),
+        on(164.0) + p(0.0, 3.4),
+        p(183.0, 3.8),
+        on(226.0) + p(0.0, 1.8),
+        p(252.0, 6.5),
+        p(258.0, 5.4),
+        on(283.0) + p(0.0, 2.6),
+        p(303.0, 2.6),
+        on(356.0) + p(0.0, 1.8),
+        on(380.0) + p(0.0, 1.8),
+    ];
+    for l in &loops {
+        for a in [0.0, 0.5, 1.0] {
+            let angle = std::f64::consts::PI * a;
+            flies.push(l.center + DVec2::from_angle(angle) * (l.radius - 0.9));
+        }
+    }
+    Level {
+        theme: Theme::Wilds,
+        jellies: vec![on(11.0), on(46.0), on(168.0), on(280.0), on(378.0)],
+        banners: Vec::new(),
+        blocks: vec![
+            Block { x0: -16.0, x1: -8.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
+            shelf(58.0, 64.0, 5.6),
+            shelf(179.0, 186.0, 1.8),
+            shelf(299.0, 306.0, -0.8),
+            Block { x0: 400.0, x1: 408.0, y0: BOTTOM, y1: 14.0, z0: -1.4, z1: 3.0, kind: BlockKind::Stone },
+        ],
+        props: Vec::new(),
+        trees: Vec::new(),
+        flies,
+        checkpoints: vec![on(1.0), on(100.0), on(140.0), on(228.0), on(272.0), on(348.0)],
+        goal: on(390.0),
+        kill_y: -16.0,
+        hills,
+        loops,
+    }
+}
+
 /// The levels in order: playing through one leads to the next.
-pub fn all() -> [fn() -> Level; 2] {
-    [dusk, jungle]
+pub fn all() -> [fn() -> Level; 3] {
+    [wilds, dusk, jungle]
 }

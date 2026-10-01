@@ -2,12 +2,12 @@
 //! last frame as a PPM image. Useful for testing moves and taking screenshots.
 //!
 //! Script: space-separated steps `KEYS:seconds`, where KEYS is any of
-//! L R J (left, right, jump) or `-` for none.
+//! L R J F (left, right, jump, fire) or `-` for none.
 //! A step `@N` starts from checkpoint N instead. Environment variables:
 //! `CAMEL_EON_SIZE=WxH`, `CAMEL_EON_DETAIL=0..2`, `CAMEL_EON_GPU_BENCH=1`,
 //! `CAMEL_EON_HAIR=shader|vector|both`, `CAMEL_EON_WEATHER=rain|clear`,
 //! `CAMEL_EON_WAV=out.wav` (also records the sound of the whole script),
-//! `CAMEL_EON_LEVEL=N` (0 = the dusk city, 1 = the jungle).
+//! `CAMEL_EON_LEVEL=N` (0 = the wilds, 1 = the dusk city, 2 = the jungle).
 //! Example: `-:1 R:1.2 RJ:0.3 R:0.8`
 
 use vello::util::RenderContext;
@@ -28,7 +28,7 @@ pub fn run(out: &str, script: &str) {
 }
 
 fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Level: `CAMEL_EON_LEVEL=1` for the jungle.
+    // Level: `CAMEL_EON_LEVEL=2` for the jungle.
     let level = std::env::var("CAMEL_EON_LEVEL").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let mut game = Game::with_level(level);
     // Detail level to test the low-detail modes: `CAMEL_EON_DETAIL=2`.
@@ -58,6 +58,7 @@ fn run_inner(out: &str, script: &str) -> Result<(), Box<dyn std::error::Error>> 
         game.input.left = keys.contains('L');
         game.input.right = keys.contains('R');
         game.input.jump = keys.contains('J');
+        game.input.fire = keys.contains('F');
         let frames = (secs * 60.0).round() as usize;
         for _ in 0..frames {
             game.update(1.0 / 60.0);
