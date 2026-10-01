@@ -154,10 +154,12 @@ struct App {
 
 async fn init(mut context: RenderContext, window: Arc<Window>) -> Result<(RenderContext, RenderState), String> {
     let size = window.inner_size();
-    let surface = context
+    let mut surface = context
         .create_surface(window.clone(), size.width.max(1), size.height.max(1), wgpu::PresentMode::AutoVsync)
         .await
         .map_err(|e| format!("failed to create surface: {e}"))?;
+    let mode = vsync_mode(&context, &surface, &window);
+    context.set_present_mode(&mut surface, mode);
     let device = &context.devices[surface.dev_id].device;
     // GPU validation errors would otherwise vanish silently (a blank screen).
     device.on_uncaptured_error(Arc::new(|err: wgpu::Error| show_error(&format!("GPU error: {err}"))));
@@ -263,7 +265,7 @@ impl ApplicationHandler<UserEvent> for App {
                     PhysicalKey::Code(KeyCode::KeyV) if pressed && !event.repeat => {
                         self.vsync = !self.vsync;
                         let mode = if self.vsync {
-                            wgpu::PresentMode::AutoVsync
+                            vsync_mode(context, &state.surface, &state.window)
                         } else {
                             wgpu::PresentMode::AutoNoVsync
                         };
@@ -351,6 +353,22 @@ impl ApplicationHandler<UserEvent> for App {
             }
             _ => {}
         }
+    }
+}
+
+/// The present mode with vsync on. On Wayland the compositor already paces
+/// redraws with frame callbacks; FIFO on top of that blocks a second time (on
+/// NVIDIA for most of a frame), so frames missed vblank and the game ran well
+/// under 60 FPS while the CPU and GPU sat idle. Mailbox doesn't block and
+/// doesn't tear. Elsewhere nothing else paces the loop, so FIFO stays.
+fn vsync_mode(context: &RenderContext, surface: &RenderSurface, window: &Window) -> wgpu::PresentMode {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let wayland = matches!(window.window_handle().map(|h| h.as_raw()), Ok(RawWindowHandle::Wayland(_)));
+    let adapter = context.devices[surface.dev_id].adapter();
+    if wayland && surface.surface.get_capabilities(adapter).present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else {
+        wgpu::PresentMode::AutoVsync
     }
 }
 
